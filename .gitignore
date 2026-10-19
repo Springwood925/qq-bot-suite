@@ -1,6 +1,5 @@
 # 依赖
-node_modules/
-**/node_modules/
+/node_modules/
 
 # 运行数据（绝不提交：里面有你的 QQ 号、群号、聊天记录）
 bridge/state/
