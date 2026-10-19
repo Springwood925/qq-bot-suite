@@ -1,0 +1,1071 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QQ 机器人 · 状态总览</title>
+<style>
+  :root{
+    --bg:#f5f6f8; --card:#fff; --line:#e3e6eb; --text:#1b1f27; --dim:#6b7280;
+    --ok:#12a150; --warn:#d97706; --bad:#dc2626; --accent:#2563eb; --chip:#eef2ff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font:14px/1.6 -apple-system,"Segoe UI","Microsoft YaHei",system-ui,sans-serif}
+  header{position:sticky;top:0;z-index:9;background:#fff;border-bottom:1px solid var(--line);
+    padding:14px 20px;display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+  h1{font-size:17px;margin:0;font-weight:650}
+  h2{font-size:14px;margin:0 0 10px;font-weight:650;color:#111827}
+  .wrap{max-width:1120px;margin:0 auto;padding:18px 20px 60px}
+  .grid{display:grid;gap:14px}
+  .g2{grid-template-columns:repeat(auto-fit,minmax(330px,1fr))}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px}
+  .kv{display:grid;grid-template-columns:auto 1fr;gap:6px 14px;font-size:13px}
+  .kv b{color:var(--dim);font-weight:500;white-space:nowrap}
+  .row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .dot{width:9px;height:9px;border-radius:50%;background:#cbd5e1;display:inline-block;flex:none}
+  .dot.ok{background:var(--ok)} .dot.bad{background:var(--bad)} .dot.warn{background:var(--warn)}
+  .muted{color:var(--dim);font-size:12px}
+  button{font:inherit;border:1px solid var(--line);background:#fff;color:var(--text);
+    padding:6px 12px;border-radius:8px;cursor:pointer}
+  button:hover{border-color:#c9ced6;background:#fafbfc}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  button.primary:hover{background:#1d4ed8}
+  a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+  input[type=range]{-webkit-appearance:none;appearance:none;width:100%;height:26px;background:transparent;cursor:pointer}
+  input[type=range]::-webkit-slider-runnable-track{height:8px;border-radius:6px;
+    background:linear-gradient(90deg,#dbeafe,#93c5fd,#60a5fa,#3b82f6,#1d4ed8)}
+  input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:22px;height:22px;border-radius:50%;
+    background:#fff;border:2px solid var(--accent);margin-top:-7px;box-shadow:0 1px 3px rgba(0,0,0,.2)}
+  .level{font-size:30px;font-weight:700;line-height:1;min-width:64px;text-align:right;
+    font-variant-numeric:tabular-nums}
+  .chips{display:flex;gap:6px;flex-wrap:wrap;margin-top:4px}
+  .chip{background:var(--chip);color:#3730a3;border-radius:999px;padding:2px 9px;font-size:12px;white-space:nowrap}
+  .chip.off{background:#f3f4f6;color:#9ca3af;text-decoration:line-through}
+  .chip.on{background:#dcfce7;color:#166534}
+  textarea{width:100%;min-height:210px;font:12.5px/1.55 ui-monospace,Consolas,"Courier New",monospace;
+    border:1px solid var(--line);border-radius:10px;padding:11px;resize:vertical;background:#fcfcfd}
+  pre{background:#0f172a;color:#e2e8f0;border-radius:10px;padding:12px;overflow:auto;max-height:340px;
+    font:12px/1.55 ui-monospace,Consolas,monospace;white-space:pre-wrap;word-break:break-word}
+  .log{background:#fbfbfc;border:1px solid var(--line);border-radius:10px;padding:10px 12px;max-height:320px;
+    overflow:auto;font:12px/1.65 ui-monospace,Consolas,monospace;white-space:pre-wrap;color:#374151}
+  .toast{position:fixed;right:18px;bottom:18px;background:#111827;color:#fff;padding:10px 16px;border-radius:10px;
+    opacity:0;transform:translateY(8px);transition:.2s;pointer-events:none;font-size:13px;max-width:70vw}
+  .toast.show{opacity:1;transform:none}
+  .sect{margin-top:20px}
+  details summary{cursor:pointer;font-weight:600;font-size:13px;color:#374151}
+  .badge{font-size:11px;padding:1px 7px;border-radius:999px;background:#f3f4f6;color:#4b5563}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{padding:7px 8px;border-bottom:1px solid var(--line);white-space:nowrap}
+  th{color:var(--dim);font-weight:500;text-align:right}
+  th:first-child,td:first-child{text-align:left}
+  tfoot td{font-weight:650;border-bottom:none;border-top:2px solid var(--line)}
+  input[type=number]{font:inherit;border:1px solid var(--line);border-radius:8px;padding:6px 8px;width:100%}
+  .calcbox{background:#0f172a;color:#e2e8f0;border-radius:10px;padding:12px;overflow:auto;
+    font:12px/1.7 ui-monospace,Consolas,monospace;white-space:pre;margin-top:10px}
+  td.wrap,th.wrap{white-space:normal;min-width:240px}
+  .mini{padding:3px 9px;font-size:12px;border-radius:6px}
+  .stat{display:inline-flex;gap:6px;align-items:baseline;background:#f8fafc;border:1px solid var(--line);
+    border-radius:8px;padding:4px 10px;margin:0 6px 6px 0;font-size:12px}
+  .stat b{font-size:15px;font-variant-numeric:tabular-nums}
+  select{font:inherit;border:1px solid var(--line);border-radius:8px;padding:5px 8px;background:#fff}
+</style>
+</head>
+<body>
+<header>
+  <h1>QQ 机器人 · 状态总览</h1>
+  <span class="row" style="gap:6px"><span id="hDot" class="dot"></span><span id="hText" class="muted">加载中…</span></span>
+  <span class="muted" id="lastUpd" style="font-size:12px"></span>
+  <span style="flex:1"></span>
+  <label class="muted row" style="gap:6px"><input type="checkbox" id="auto" checked>自动刷新 5s</label>
+  <button id="refresh">立即刷新</button>
+  <a href="/" id="consoleLink"><button>完整控制台</button></a>
+</header>
+
+<div class="wrap">
+
+  <div class="grid g2">
+    <div class="card">
+      <h2>桥接状态</h2>
+      <div class="kv" id="bridgeKv"><span class="muted">加载中…</span></div>
+    </div>
+    <div class="card">
+      <h2>网关（SnowLuma）</h2>
+      <div class="kv" id="gwKv"><span class="muted">加载中…</span></div>
+      <div class="row" style="margin-top:10px">
+        <a href="http://127.0.0.1:5099" target="_blank">打开网关控制台 5099</a>
+      </div>
+    </div>
+    <div class="card">
+      <h2>微信 <span class="badge" id="wxBadge">—</span></h2>
+      <div class="row" style="margin-bottom:10px">
+        <button id="wxToggle">—</button>
+        <span class="muted" style="flex:1;font-size:12px">
+          暂停后：不再处理微信消息、也不再往微信发任何东西（<strong>抢鼠标键盘只发生在发送那一刻</strong>，所以掐掉发送就够）。
+          采集器仍只读运行 —— 它从不碰窗口，游标继续推进，所以恢复时不会补发停用期间积压的消息。
+        </span>
+      </div>
+      <div class="kv" id="wxKv"><span class="muted">加载中…</span></div>
+      <div class="row" style="margin-top:10px;display:block" id="wxRecent"></div>
+      <div class="row" style="margin-top:14px">
+        <span class="muted" style="flex:1">白名单 —— 只有名单里的会话才会被机器人处理</span>
+        <button id="wxWlReload">重新拉取</button>
+        <button id="wxWlSave">保存</button>
+      </div>
+      <div id="wxWl" style="margin-top:8px"><span class="muted">加载中…</span></div>
+    </div>
+  </div>
+
+  <div class="sect">
+    <h2>响应档位 <span class="badge">拖动即生效 · 不唤醒 = 不烧 token</span></h2>
+    <div class="grid g2" id="levels"></div>
+  </div>
+
+  <div class="sect card">
+    <h2>用量与计价 <span class="badge" id="usageBadge">—</span></h2>
+    <div id="usageTable"><span class="muted">加载中…</span></div>
+    <div class="muted" style="margin-top:9px" id="priceNote">—</div>
+
+    <details style="margin-top:12px">
+      <summary>计价器 —— 自己填数字算钱</summary>
+      <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(160px,1fr));margin-top:10px">
+        <label class="muted">缓存命中输入 tokens<br><input type="number" id="calcIn1" value="0" min="0"></label>
+        <label class="muted">未命中输入 tokens<br><input type="number" id="calcIn2" value="0" min="0"></label>
+        <label class="muted">输出 tokens<br><input type="number" id="calcIn3" value="0" min="0"></label>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <label class="muted row" style="gap:6px"><input type="checkbox" id="calcPeak">按高峰价算</label>
+        <span style="flex:1"></span>
+        <button id="calcFill">填入当前总用量</button>
+      </div>
+      <div class="calcbox" id="calcResult">—</div>
+    </details>
+  </div>
+
+  <div class="sect card">
+    <h2 id="slangHead" style="cursor:pointer;user-select:none">
+      <span id="slangCaret" style="display:inline-block;width:14px">▸</span>群聊黑话库
+      <span class="badge" id="slangBadge">—</span>
+      <span class="muted" style="font-weight:400;font-size:12px">点标题展开 / 收起</span>
+    </h2>
+    <div id="slangBody" style="display:none">
+      <div id="slangStats"><span class="muted">加载中…</span></div>
+      <div class="row" style="margin:10px 0">
+        <select id="slangFilter">
+          <option value="all">全部</option>
+          <option value="candidate">只看待确认</option>
+          <option value="confirmed">只看已生效</option>
+          <option value="empty">只看没解释的</option>
+          <option value="risky">只看带风险提示的</option>
+        </select>
+        <span style="flex:1"></span>
+        <button id="slangReload">刷新</button>
+        <button id="slangResearch">对没解释的重跑研究</button>
+        <button class="primary" id="slangConfirmAll">一键确认（有解释的）</button>
+      </div>
+      <div id="slangTable" style="max-height:460px;overflow:auto"><span class="muted">加载中…</span></div>
+      <div class="muted" style="margin-top:9px">
+        黑话只有确认后才会进机器人的提示词；<strong>没解释的确认不了</strong>（接口会拒），所以要先研究或手填。
+        带风险提示的条目机器人能看到"慎用"，但不会自动禁用它。
+      </div>
+    </div>
+  </div>
+
+  <div class="sect card">
+    <h2>白名单与群管理 <span class="badge" id="wlBadge">—</span></h2>
+    <div class="row" style="margin-bottom:10px">
+      <span class="muted">机器人只对勾选的群 / 好友工作。改完<strong>立即生效，不用重启</strong>。
+        <br>新群：先让它进群（用手机 QQ 拉它进群），再回到这里点「重新拉取」勾上。</span>
+      <span style="flex:1"></span>
+      <button id="wlReload">重新拉取</button>
+      <button class="primary" id="wlSave">保存</button>
+    </div>
+    <div id="wlBox"><span class="muted">加载中…</span></div>
+  </div>
+
+  <div class="sect card">
+    <h2>记忆与群友印象 <span class="badge" id="memBadge">—</span></h2>
+    <div class="row" style="margin-bottom:10px">
+      <span class="muted">机器人记着的东西，每次唤醒它都会看到这些。印象记少了它就不认识人。
+        <br>「记录次数」＝它写过几次这个人的印象（不是聊过几句）；「最后记录」＝它上次写的时间。</span>
+      <span style="flex:1"></span>
+      <button id="memReload">刷新</button>
+    </div>
+    <div id="memBox"><span class="muted">加载中…</span></div>
+  </div>
+
+  <div class="sect card">
+    <h2>提示词 <span class="badge" id="promptBadge">—</span></h2>
+    <div class="row" style="margin-bottom:8px">
+      <span class="muted" id="promptFile">—</span>
+      <span style="flex:1"></span>
+      <button id="promptReload">重新读取</button>
+      <button class="primary" id="promptSave">保存并生效</button>
+    </div>
+    <textarea id="promptText" spellcheck="false" placeholder="加载中…"></textarea>
+    <div class="muted" style="margin-top:6px">
+      HTML 注释（<code>&lt;!-- --&gt;</code>）在注入时会被整块剥掉，行首行尾空白和空行也会清掉，所以「注入字数」通常比原文少。
+      保存后<strong>下一次唤醒立刻生效</strong>，不用重启桥接。
+    </div>
+  </div>
+
+  <div class="sect card">
+    <h2>最近活动</h2>
+    <div class="log" id="activity">加载中…</div>
+  </div>
+
+  <details class="sect card">
+    <summary>唤醒配置明细（原始 JSON，排查用）</summary>
+    <pre id="rawJson">—</pre>
+  </details>
+
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+(function(){
+  'use strict';
+  var qs = new URLSearchParams(location.search);
+  var t = qs.get('token');
+  if (t) localStorage.setItem('consoleToken', t);
+  var TOKEN = localStorage.getItem('consoleToken') || '';
+  document.getElementById('consoleLink').href = '/' + (TOKEN ? '?token=' + encodeURIComponent(TOKEN) : '');
+
+  function headers(json){
+    var h = {};
+    if (TOKEN) h['x-console-token'] = TOKEN;
+    if (json) h['content-type'] = 'application/json';
+    return h;
+  }
+  function toast(msg, ms){
+    var el = document.getElementById('toast');
+    el.textContent = msg; el.classList.add('show');
+    clearTimeout(el._t); el._t = setTimeout(function(){ el.classList.remove('show'); }, ms || 2200);
+  }
+  function api(path, opts){
+    opts = opts || {};
+    return fetch(path, { method: opts.method || 'GET', headers: headers(!!opts.body), body: opts.body ? JSON.stringify(opts.body) : undefined })
+      .then(function(r){ return r.json().then(function(j){ if(!r.ok) throw new Error(j && j.error ? j.error : ('HTTP ' + r.status)); return j; }); });
+  }
+  function esc(s){ return String(s == null ? '' : s).replace(/[&<>"]/g, function(c){
+    return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c]; }); }
+  function fmtTime(ms){
+    if(!ms) return '—';
+    var d = new Date(ms);
+    return d.toLocaleString('zh-CN', { hour12:false });
+  }
+  function ago(ms){
+    if(!ms) return '—';
+    var s = Math.round((Date.now()-ms)/1000);
+    if (s < 60) return s + ' 秒前';
+    if (s < 3600) return Math.round(s/60) + ' 分钟前';
+    if (s < 86400) return Math.round(s/3600) + ' 小时前';
+    return Math.round(s/86400) + ' 天前';
+  }
+  function name(key){
+    var p = String(key).split(':');
+    if (p[0] === 'group') return '群聊 ' + p[1];
+    if (p[0] === 'private') return '私聊 ' + p[1];
+    return key;
+  }
+
+  // ── 档位 ⇄ 唤醒配置 的映射 ────────────────────────────────────────────────
+  // 档位语义（照 QQAgent 的 4 档 + 线性概率）：
+  //   0       只回 @（最省）
+  //   1~25    被叫到才回：@ / 名字 / 提问
+  //   26~50   加上关键词
+  //   51~75   开始按概率参与（2%→10%）+ 拍一拍
+  //   76~99   活跃（10%→50%）
+  //   100     全响应（anyMessage）
+  function levelToConfig(level, keywords){
+    var l = Math.max(0, Math.min(100, Math.round(level)));
+    var base = { atMention:true, nameMention:false, question:false, keywords:[], poke:false, anyMessage:false, probability:0 };
+    var cfg = { mode:'diving', infinite:true, triggers: base };
+    if (l === 0) return cfg;
+    cfg.triggers.nameMention = true;
+    cfg.triggers.question = true;
+    if (l <= 25) return cfg;
+    cfg.triggers.keywords = keywords || [];
+    if (l <= 50) return cfg;
+    cfg.triggers.poke = true;
+    if (l <= 75) { cfg.triggers.probability = +(0.02 + (l-50)/25*0.08).toFixed(3); return cfg; }
+    if (l < 100)  { cfg.triggers.probability = +(0.10 + (l-75)/24*0.40).toFixed(3); return cfg; }
+    cfg.mode = 'active';
+    cfg.triggers.anyMessage = true;
+    cfg.triggers.probability = 1;
+    return cfg;
+  }
+  function configToLevel(cfg, kwCount){
+    var c = cfg || {}, tg = c.triggers || {};
+    if (tg.anyMessage === true || c.mode === 'active') return 100;
+    var hasKw = (Number(kwCount) || 0) > 0;
+    var p = Number(tg.probability) || 0;
+    if (!hasKw){
+      if (!tg.nameMention && !tg.question) return 0;
+      return 10;
+    }
+    if (p <= 0) return 40;
+    if (p <= 0.10) return Math.round(50 + (p/0.10)*25);
+    return Math.round(75 + Math.min(1, (p-0.10)/0.40)*24);
+  }
+  function levelLabel(l){
+    if (l === 0) return '完全潜水 · 只回 @';
+    if (l <= 25) return '被叫到才回（@ / 名字 / 提问）';
+    if (l <= 50) return '加上关键词唤醒';
+    if (l <= 75) return '按概率参与 · 不叫也可能开口';
+    if (l < 100) return '活跃 · 明显爱插话';
+    return '全响应 · 每条消息都看（最贵）';
+  }
+  function chip(on, text){ return '<span class="chip ' + (on ? 'on' : 'off') + '">' + esc(text) + '</span>'; }
+
+  // 关键词备份：档位压到 25 以下要把 keywords 清空（否则无法"关闭关键词唤醒"），
+  // 原文备份在 localStorage，档位调回来时自动恢复，不用你重打一遍。
+  function kwKey(key){ return 'kw:' + key; }
+  function kwBackup(key){ try { return JSON.parse(localStorage.getItem(kwKey(key)) || '[]'); } catch(e){ return []; } }
+
+  var STATE = { convs: [], levels: {} };
+
+  function renderLevels(){
+    var box = document.getElementById('levels');
+    box.innerHTML = STATE.convs.map(function(c){
+      var key = c.key, tg = c.wakeConfig && c.wakeConfig.triggers || {};
+      var live = Array.isArray(tg.keywords) ? tg.keywords : [];
+      if (live.length) localStorage.setItem(kwKey(key), JSON.stringify(live));
+      var pool = live.length ? live : kwBackup(key);
+      var lv = STATE.levels[key];
+      if (lv === undefined) lv = configToLevel(c.wakeConfig, pool.length);
+      var preview = levelToConfig(lv, pool).triggers;
+      // 发送频率用量：一眼看出离限流还有多远（撞上限后发送会被直接拒）
+      var mm = Number(c.maxSendPerMinute) || 0, hh = Number(c.maxSendPerHour) || 0;
+      var um = Number(c.sendPerMinute) || 0, uh = Number(c.sendPerHour) || 0;
+      var near = (hh > 0 && uh / hh >= 0.8) || (mm > 0 && um / mm >= 0.8);
+      var sendLine = '<div class="muted" style="margin-top:6px' + (near ? ';color:#b91c1c' : '') + '">'
+        + '发送频率：本分钟 <b>' + um + '</b>/' + (mm || '不限') + '　本小时 <b>' + uh + '</b>/' + (hh || '不限')
+        + (near ? '　⚠ 快到上限了，再发会被拒' : '') + '</div>';
+      // 专属人格提示词（2026-09-23 加）：默认折叠 —— 每个会话卡片都摊开一个多行输入框
+      // 会把整页撑得没法看（用户明确嫌页面占地方）。
+      var persona = String(c.persona || '');
+      return ''
+      + '<div class="card" data-key="' + esc(key) + '">'
+      +   '<div class="row"><h2 style="margin:0">' + esc(name(key)) + '</h2>'
+      +     (Number(c.unreadCount) > 0 ? '<span class="chip" style="background:#fef3c7;color:#92400e">未读 ' + c.unreadCount + '</span>' : '')
+      +     '<span style="flex:1"></span><span class="level">' + lv + '</span></div>'
+      +   '<div class="muted" style="margin:2px 0 6px">' + esc(levelLabel(lv)) + '</div>'
+      +   '<input type="range" min="0" max="100" step="1" value="' + lv + '">'
+      +   '<div class="chips">'
+      +     chip(preview.atMention, '@')
+      +     chip(preview.nameMention, '叫名字')
+      +     chip(preview.question, '提问')
+      +     chip((preview.keywords||[]).length > 0, '关键词 ' + ((preview.keywords||[]).length || 0))
+      +     chip(preview.poke, '拍一拍')
+      +     chip((Number(preview.probability)||0) > 0, '概率 ' + Math.round((Number(preview.probability)||0)*100) + '%')
+      +     chip(preview.anyMessage, '全响应')
+      +   '</div>'
+      +   '<label class="muted row" style="gap:6px;margin-top:7px;cursor:pointer">'
+      +     '<input type="checkbox" class="lvLock"' + (c.participationLocked ? ' checked' : '') + '>'
+      +     '锁住档位（机器人不许自己改' + (c.participationLocked ? '，当前已锁' : '') + '）'
+      +   '</label>'
+      +   sendLine
+      +   '<label class="muted row" style="gap:6px;margin-top:7px;cursor:pointer">'
+      +     '<input type="checkbox" class="r18Toggle"' + (c.r18 ? ' checked' : '') + '>'
+      +     '成人向对话放行（R18）' + (c.r18 ? ' · <b style="color:#b45309">已放行</b>' : ' · 回避中')
+      +   '</label>'
+      +   '<div class="muted" style="margin-top:2px">三条红线任何状态下都不放行：未成年人 / 非自愿·胁迫·暴力·药物 / 真实个人信息·线下见面·钱财</div>'
+      +   '<details style="margin-top:8px">'
+      +     '<summary class="muted" style="cursor:pointer">专属人格 / 提示词预览'
+      +       (persona ? ' · <b style="color:#0f766e">' + persona.length + ' 字</b>' + (c.personaOverride ? ' · 覆盖全局' : '') : '（未设置，跟随全局「我的提示词.md」）')
+      +     '</summary>'
+      +     '<textarea class="personaText" rows="5" style="width:100%;margin-top:6px;font-family:inherit;box-sizing:border-box" placeholder="只给这个会话的额外人格/规矩。留空 = 和别的会话一样，用全局「我的提示词.md」。">' + esc(persona) + '</textarea>'
+      +     '<label class="muted row" style="gap:6px;margin-top:6px;cursor:pointer">'
+      +       '<input type="checkbox" class="personaOv"' + (c.personaOverride ? ' checked' : '') + '>'
+      +       '覆盖全局提示词（本会话只用上面这段；<b>安全规则</b>仍会保留）'
+      +     '</label>'
+      +     '<div class="row" style="margin-top:6px">'
+      +       '<button class="personaSave">保存人格</button>'
+      +       '<span class="muted" style="margin-left:8px">改完下一轮唤醒生效，不用重启桥</span>'
+      +     '</div>'
+      +     '<div class="row" style="margin-top:10px">'
+      +       '<button class="promptPeek">看看它这轮会看到什么</button>'
+      +       '<span class="muted" style="margin-left:8px">只读预览，不会发给任何人</span>'
+      +     '</div>'
+      +     '<pre class="promptBox" style="display:none;max-height:320px;overflow:auto;white-space:pre-wrap;word-break:break-word;font-size:12px;line-height:1.5;margin-top:6px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;padding:8px"></pre>'
+      +   '</details>'
+      +   '<div class="muted" style="margin-top:8px" data-status></div>'
+      + '</div>';
+    }).join('') || '<div class="card muted">还没有会话</div>';
+
+    Array.prototype.forEach.call(box.querySelectorAll('.card[data-key]'), function(card){
+      var key = card.getAttribute('data-key');
+      var range = card.querySelector('input[type=range]');
+      range.addEventListener('input', function(){
+        var lv = Number(range.value);
+        STATE.levels[key] = lv;
+        card.querySelector('.level').textContent = lv;
+        card.querySelector('.muted').textContent = levelLabel(lv);
+        var c = STATE.convs.filter(function(x){ return x.key === key; })[0];
+        var tg = c.wakeConfig && c.wakeConfig.triggers || {};
+        var pool = (Array.isArray(tg.keywords) && tg.keywords.length) ? tg.keywords : kwBackup(key);
+        var pv = levelToConfig(lv, pool).triggers;
+        var chips = card.querySelectorAll('.chip');
+        var labels = ['@','叫名字','提问','关键词 ' + ((pv.keywords||[]).length||0),'拍一拍','概率 ' + Math.round((Number(pv.probability)||0)*100) + '%','全响应'];
+        var ons = [pv.atMention, pv.nameMention, pv.question, (pv.keywords||[]).length>0, pv.poke, (Number(pv.probability)||0)>0, pv.anyMessage];
+        for (var i=0;i<chips.length;i++){
+          chips[i].className = 'chip ' + (ons[i] ? 'on' : 'off');
+          chips[i].textContent = labels[i];
+        }
+      });
+      range.addEventListener('change', function(){
+        var lv = Number(range.value);
+        var lockBox = card.querySelector('.lvLock');
+        var locked = lockBox ? !!lockBox.checked : true;
+        var c = STATE.convs.filter(function(x){ return x.key === key; })[0];
+        var tg = c.wakeConfig && c.wakeConfig.triggers || {};
+        var live = Array.isArray(tg.keywords) ? tg.keywords : [];
+        if (live.length) localStorage.setItem(kwKey(key), JSON.stringify(live));
+        var pool = live.length ? live : kwBackup(key);
+        var status = card.querySelector('[data-status]');
+        status.textContent = '保存中…';
+        api('/api/socialV2/wake-config', { method:'POST', body:{ key:key, config: levelToConfig(lv, pool), level: lv, pin: locked } })
+          .then(function(){
+            status.textContent = '已生效 · ' + new Date().toLocaleTimeString('zh-CN', { hour12:false })
+              + (locked ? ' · 已锁定' : ' · 未锁定');
+            toast(name(key) + ' 档位 → ' + lv + '（' + levelLabel(lv) + '）');
+            refresh();
+          })
+          .catch(function(e){ status.textContent = '保存失败：' + e.message; toast('保存失败：' + e.message, 4000); });
+      });
+      // 锁定开关：勾选/取消都立刻按当前档位存一次（带上 pin 状态），不用再拖滑条
+      var lockEl = card.querySelector('.lvLock');
+      if (lockEl) lockEl.addEventListener('change', function(){ range.dispatchEvent(new Event('change')); });
+      // R18 放行开关（按会话独立）：勾选/取消立刻存，下一轮唤醒生效（不打断进行中的回合）
+      var r18El = card.querySelector('.r18Toggle');
+      if (r18El) r18El.addEventListener('change', function(){
+        var on = !!r18El.checked;
+        var status = card.querySelector('[data-status]');
+        status.textContent = '保存中…';
+        api('/api/socialV2/r18', { method:'POST', body:{ key:key, enabled:on } })
+          .then(function(){
+            status.textContent = 'R18 ' + (on ? '已放行' : '已回避') + ' · ' + new Date().toLocaleTimeString('zh-CN', { hour12:false });
+            toast(name(key) + ' R18 → ' + (on ? '放行' : '回避'));
+            refresh();
+          })
+          .catch(function(e){ status.textContent = '保存失败：' + e.message; toast('保存失败：' + e.message, 4000); });
+      });
+      // 专属人格提示词（2026-09-23 加）：点「保存人格」才提交 —— 这是多行文本，
+      // 每敲一个字就 POST 一次不合适。改完下一轮唤醒生效（提示词每轮现拼）。
+      var pSave = card.querySelector('.personaSave');
+      if (pSave) pSave.addEventListener('click', function(){
+        var ta = card.querySelector('.personaText');
+        var ov = card.querySelector('.personaOv');
+        var status = card.querySelector('[data-status]');
+        var text = ta ? String(ta.value || '').trim() : '';
+        status.textContent = '保存中…';
+        api('/api/socialV2/persona', { method:'POST', body:{ key:key, persona:text, override: !!(ov && ov.checked) } })
+          .then(function(r){
+            var p = String(r.persona || '');
+            status.textContent = '人格 ' + (p ? (p.length + ' 字' + (r.personaOverride ? '（覆盖全局）' : '（补充在全局之后）')) : '已清空')
+              + ' · ' + new Date().toLocaleTimeString('zh-CN', { hour12:false });
+            toast(name(key) + ' 专属人格' + (p ? '已保存（下一轮生效）' : '已清空'));
+            refresh();
+          })
+          .catch(function(e){ status.textContent = '保存失败：' + e.message; toast('保存失败：' + e.message, 4000); });
+      });
+      // 提示词预览（2026-09-23 加）：只读，把这一轮**会注入的完整文本**打出来。
+      // 为什么值得放进面板：以前想知道"专属人格有没有真的生效"只能发条消息试探，
+      // 而这个接口让这件事变成一眼可见。再点一次收起。
+      var peek = card.querySelector('.promptPeek');
+      if (peek) peek.addEventListener('click', function(){
+        var pbox = card.querySelector('.promptBox');
+        if (!pbox) return;
+        if (pbox.style.display !== 'none') { pbox.style.display = 'none'; return; }
+        pbox.style.display = '';
+        pbox.textContent = '读取中…';
+        api('/api/debug/prompt?key=' + encodeURIComponent(key))
+          .then(function(r){
+            var p = String(r.persona || '');
+            pbox.textContent = '【本轮会注入 ' + r.length + ' 字】全局固定规矩 ' + (r.customPromptChars || 0) + ' 字'
+              + '　专属人格 ' + p.length + ' 字' + (r.personaOverride ? '（覆盖全局）' : '')
+              + '\n\n' + String(r.text || '');
+          })
+          .catch(function(e){ pbox.textContent = '读取失败：' + e.message; });
+      });
+    });
+  }
+
+  function renderBridge(s){
+    var ok = s.dshReady;
+    document.getElementById('hDot').className = 'dot ' + (ok ? 'ok' : 'bad');
+    document.getElementById('hText').textContent = ok ? '正常' : 'DSH 未就绪';
+    document.getElementById('bridgeKv').innerHTML = [
+      ['运行模式', '<b>' + esc(s.mode) + '</b>'],
+      ['DSH', ok ? '<span class="dot ok"></span> 就绪' : '<span class="dot bad"></span> 未就绪'],
+      ['当前人设', esc(s.role || '—') + ' <span class="muted">(' + esc(s.roleMode || '') + ')</span>'],
+      ['主人 QQ', esc(s.ownerQQ || '—')],
+      ['白名单群', esc((s.allowGroups||[]).join(', ') || '—')],
+      ['白名单私聊', esc((s.allowPrivate||[]).join(', ') || '—')],
+      ['AI 暂停', s.socialV2Paused ? '<span style="color:#dc2626">已暂停</span>' : '否'],
+      ['预设', esc(s.closedAgentPreset || '—')]
+    ].map(function(r){ return '<b>' + r[0] + '</b><span>' + r[1] + '</span>'; }).join('');
+  }
+
+  function renderGw(g){
+    var ws = g.wsConnected;
+    var login = g.httpOk && g.userId;
+    var rows = [
+      ['WS 连接 (3001)', ws ? '<span class="dot ok"></span> 已连接' : '<span class="dot bad"></span> 断开'],
+      ['HTTP 探活 (3000)', g.httpOk ? '<span class="dot ok"></span> 正常' : '<span class="dot bad"></span> ' + esc(g.error || '无响应')],
+      ['QQ 登录', login ? ('<span class="dot ok"></span> ' + esc(g.userId) + ' ' + esc(g.nickname || '')) : '<span class="dot warn"></span> 取不到（可能掉线）'],
+      ['最近连上', fmtTime(g.lastOpenAt) + ' <span class="muted">(' + ago(g.lastOpenAt) + ')</span>'],
+      ['最近断开', g.lastCloseAt ? (fmtTime(g.lastCloseAt) + ' <span class="muted">(' + ago(g.lastCloseAt) + ')</span>') : '—'],
+      ['报错', esc(g.lastError || '—')]
+    ];
+    document.getElementById('gwKv').innerHTML = rows.map(function(r){ return '<b>' + r[0] + '</b><span>' + r[1] + '</span>'; }).join('');
+  }
+
+  // 微信面板（2026-09-23 加）：采集开关 / 白名单 / 事件计数 / 发送队列 / 最近事件。
+  // 数据来源 GET /api/wx/status。注意这里的"事件"= 采集器写进 wx-events.jsonl 的条目，
+  // 不是"收到几条消息"（同一条消息可能被多次读到，靠 isSelf 与防回环去重）。
+  // 微信 bot 总开关的当前值（由 renderWx 刷新）。用它而不是去读徽标文案来判断状态 ——
+  // 读 DOM 文案那种写法一改文案就坏。
+  var WXEN = true;
+  function renderWx(w){
+    var badge = document.getElementById('wxBadge');
+    if (!w || !w.ok){ if (badge) badge.textContent = '读取失败'; return; }
+    if (badge) badge.textContent = w.enabled ? '已启用' : '已暂停';
+    WXEN = w.enabled !== false;
+    var tg = document.getElementById('wxToggle');
+    if (tg) tg.textContent = WXEN ? '暂停微信 bot' : '开启微信 bot';
+    var lastAt = w.eventFileMtime ? new Date(w.eventFileMtime).getTime() : 0;
+    // 白名单不在这里列了 —— 下面的编辑器是可编辑的同一份数据，列两遍只会让人怀疑哪份是真的。
+    var rows = [
+      ['采集开关', w.enabled ? '<span class="dot ok"></span> 已启用' : '<span class="dot bad"></span> 已关闭'],
+      ['放行自己发的', w.allowSelf ? '是（单号 / 自测场景）' : '否（只收别人发来的）'],
+      ['累计事件', esc(String(w.eventTotal || 0)) + ' 条 / ' + (Math.round((w.eventFileSize || 0) / 102.4) / 10) + ' KB'],
+      ['最后写入', lastAt ? (fmtTime(lastAt) + ' <span class="muted">(' + ago(lastAt) + ')</span>') : '—'],
+      ['发送队列', String(w.queueLength || 0) + ' 条' + (w.sending ? ' <span class="muted">（发送中）</span>' : '')],
+      ['防回环缓存', String(w.sentMarkCount || 0) + ' 条'],
+      ['发送脚本', w.sendScriptExists ? '<span class="dot ok"></span> 就绪' : '<span class="dot bad"></span> 缺失']
+    ];
+    var kv = document.getElementById('wxKv');
+    if (kv) kv.innerHTML = rows.map(function(r){ return '<b>' + r[0] + '</b><span>' + r[1] + '</span>'; }).join('');
+    var rec = (w.recent || []).slice(0, 5).map(function(e){
+      var t = e.ts ? new Date(e.ts).toLocaleTimeString('zh-CN', { hour12: false }) : '';
+      return '<div style="margin:2px 0"><span class="muted">' + esc(t) + '</span> ' + esc(e.sender || '') + '：' + esc(e.text || '') + '</div>';
+    }).join('');
+    var rbox = document.getElementById('wxRecent');
+    if (rbox) rbox.innerHTML = rec ? ('<b>最近事件</b>' + rec) : '<span class="muted">（还没有事件 —— 采集器可能在冷却，或微信没开着）</span>';
+  }
+
+  // ── 微信白名单编辑器（2026-09-23 加）──────────────────────────────────────
+  // 候选会话来自采集器每轮写的 state/wx-chats.json（经 GET /api/wx/chats 暴露）。
+  // 交互刻意做成"所见即所得"：勾选框只是往下面的文本框里增删名字，**文本框才是唯一真相** ——
+  // 这样手填一个不在候选列表里的会话，不会被勾选框的状态覆盖掉。
+  // ⚠️ 不要把这个面板挂进 refresh()：自动刷新会重绘并冲掉正在编辑的内容。
+  var WXC = { chats: [], allowG: [], allowP: [], allowSelf: false, loaded: false };
+  function wxSplit(v){
+    return String(v || '').split(/[,，;；\n]+/).map(function(s){ return s.trim(); }).filter(Boolean);
+  }
+  function renderWxWl(){
+    var box = document.getElementById('wxWl');
+    if (!box) return;
+    var rows = WXC.chats.map(function(c){
+      var isG = c.type === 'group';
+      var list = isG ? WXC.allowG : WXC.allowP;
+      var on = list.indexOf(c.name) >= 0 || list.indexOf(c.username) >= 0;
+      return '<tr>'
+        + '<td><input type="checkbox" class="wxChat" data-name="' + esc(c.name || c.username) + '" data-type="' + esc(c.type) + '"' + (on ? ' checked' : '') + '></td>'
+        + '<td>' + esc(c.name || '（没名字）') + '</td>'
+        + '<td class="muted" style="font-size:11px">' + esc(c.username) + '</td>'
+        + '<td>' + (isG ? '<span class="chip">群</span>' : '<span class="chip">私聊</span>') + '</td>'
+        + '</tr>';
+    }).join('');
+    // 名单里有、但当前会话列表里没有的（没聊过 / 已删除）：只提示，不擅自删掉
+    var stale = WXC.allowG.concat(WXC.allowP).filter(function(n){
+      return !WXC.chats.some(function(c){ return c.name === n || c.username === n; });
+    });
+    box.innerHTML = ''
+      + (WXC.chats.length
+          ? '<table><thead><tr><th style="width:34px"></th><th>名字</th><th>会话 id</th><th>类型</th></tr></thead><tbody>' + rows + '</tbody></table>'
+          : '<div class="muted">还没拿到微信会话清单 —— 采集器起来后每 3 秒刷一次，稍等再点「重新拉取」。</div>')
+      + (stale.length ? '<div class="muted" style="margin-top:8px;color:#b45309">ℹ 名单里还有 ' + esc(stale.join('、')) + '：当前不在会话列表里（没聊过或已删除）。留着不影响放行判断。</div>' : '')
+      + '<div class="row" style="margin-top:12px"><span class="muted" style="min-width:86px">群白名单</span>'
+      +   '<input id="wxAllowG" style="flex:1" value="' + esc(WXC.allowG.join(', ')) + '" placeholder="群名，用逗号分隔"></div>'
+      + '<div class="row" style="margin-top:8px"><span class="muted" style="min-width:86px">私聊白名单</span>'
+      +   '<input id="wxAllowP" style="flex:1" value="' + esc(WXC.allowP.join(', ')) + '" placeholder="昵称或 wxid，用逗号分隔"></div>'
+      + '<div class="muted" style="margin-top:8px">采集器已经按 sender_id 过滤掉机器人自己发的消息，'
+      +   '所以「放行自己发的」现在只是兜底开关（当前：' + (WXC.allowSelf ? '开' : '关') + '）。</div>';
+  }
+  function loadWxWl(){
+    api('/api/wx/chats').then(function(d){
+      d = d || {};
+      WXC.chats = d.chats || [];
+      WXC.allowG = (d.allow && d.allow.groups) || [];
+      WXC.allowP = (d.allow && d.allow.private) || [];
+      WXC.allowSelf = !!d.allowSelf;
+      WXC.loaded = true;
+      renderWxWl();
+    }).catch(function(e){
+      var box = document.getElementById('wxWl');
+      if (box) box.innerHTML = '<span class="muted">读取失败：' + esc(e.message) + '</span>';
+    });
+  }
+
+  function loadPrompt(){
+    document.getElementById('promptText').value = '加载中…';
+    api('/api/custom-prompt').then(function(p){
+      document.getElementById('promptText').value = p.raw || '';
+      document.getElementById('promptFile').textContent = p.path + (p.exists ? '' : '（文件不存在，保存会新建）');
+      document.getElementById('promptBadge').textContent = '注入 ' + p.chars + ' 字 / 原文 ' + p.rawChars + ' 字';
+    }).catch(function(e){
+      document.getElementById('promptText').value = '';
+      document.getElementById('promptBadge').textContent = '读取失败：' + e.message;
+    });
+  }
+
+  // ── 用量与计价 ───────────────────────────────────────────────────────────
+  var PRICE = null, USAGE = null;
+  function num(n){ return Number(n || 0).toLocaleString('zh-CN'); }
+  function money(n){
+    n = Number(n) || 0;
+    if (n === 0) return '¥0';
+    if (n < 0.01) return '¥' + n.toFixed(4);
+    if (n < 1) return '¥' + n.toFixed(3);
+    return '¥' + n.toFixed(2);
+  }
+  function renderUsage(u){
+    PRICE = u.price; USAGE = u.total;
+    var cur = u.nowPeak ? u.price.peak : u.price.idle;
+    var t = u.total;
+    document.getElementById('usageBadge').textContent =
+      (u.nowPeak ? '当前高峰时段' : '当前闲时')
+      + ' · 缓存命中率 ' + (t.hitRate * 100).toFixed(1)
+      + '% · 共 ' + t.turns + ' 回合';
+    var body = u.sessions.map(function(s){
+      if (!s.ok) return '<tr><td>' + esc(name(s.key)) + '</td><td colspan="6" class="muted">读不到用量：' + esc(s.error || '') + '</td></tr>';
+      return '<tr>'
+        + '<td>' + esc(name(s.key)) + '</td>'
+        + '<td style="text-align:right">' + (s.hitRate * 100).toFixed(1) + '%</td>'
+        + '<td style="text-align:right">' + num(s.cacheRead) + '</td>'
+        + '<td style="text-align:right">' + num(s.uncached) + '</td>'
+        + '<td style="text-align:right">' + num(s.output) + '</td>'
+        + '<td style="text-align:right">' + s.turns + ' / ' + s.steps + '</td>'
+        + '<td style="text-align:right"><b>' + money(u.nowPeak ? s.costPeak : s.costIdle) + '</b></td>'
+        + '</tr>';
+    }).join('');
+    document.getElementById('usageTable').innerHTML =
+      '<table><thead><tr>'
+      + '<th>会话</th><th>命中率</th><th>缓存命中输入</th><th>未命中输入</th><th>输出</th><th>回合/调用</th><th>费用</th>'
+      + '</tr></thead><tbody>' + body + '</tbody><tfoot><tr>'
+      + '<td>合计</td>'
+      + '<td style="text-align:right">' + (t.hitRate * 100).toFixed(1) + '%</td>'
+      + '<td style="text-align:right">' + num(t.cacheRead) + '</td>'
+      + '<td style="text-align:right">' + num(t.uncached) + '</td>'
+      + '<td style="text-align:right">' + num(t.output) + '</td>'
+      + '<td style="text-align:right">' + t.turns + ' / ' + t.steps + '</td>'
+      + '<td style="text-align:right"><b>' + money(u.nowPeak ? t.costPeak : t.costIdle) + '</b></td>'
+      + '</tr></tfoot></table>';
+    var perTurn = t.turns ? (u.nowPeak ? t.costPeak : t.costIdle) / t.turns : 0;
+    document.getElementById('priceNote').innerHTML =
+      '单价（' + esc(u.price.model) + '，' + esc(u.price.unit) + '）：'
+      + '缓存命中 <b>' + cur.cacheHit + '</b> · 未命中 <b>' + cur.miss + '</b> · 输出 <b>' + cur.output + '</b>'
+      + '　|　平均 <b>' + money(perTurn) + '</b>/回合 · <b>' + (t.stepsPerTurn || 0).toFixed(1) + '</b> 次调用/回合'
+      + '<br>' + esc(u.price.peakRule)
+      + '<br><span style="color:#92400e">累计口径：会话轮换时会把上一轮的用量折进累计账本，所以数字<b>只增不减</b>。'
+      + '修复之前已经归档的旧会话无法可靠归属到具体群，未计入。</span>';
+    if (!document.getElementById('calcIn1').value || document.getElementById('calcIn1').value === '0') calcFill();
+    calcUpdate();
+  }
+  function calcFill(){
+    if (!USAGE) return;
+    document.getElementById('calcIn1').value = USAGE.cacheRead;
+    document.getElementById('calcIn2').value = USAGE.uncached;
+    document.getElementById('calcIn3').value = USAGE.output;
+  }
+  function calcUpdate(){
+    if (!PRICE) return;
+    var hit = Number(document.getElementById('calcIn1').value) || 0;
+    var miss = Number(document.getElementById('calcIn2').value) || 0;
+    var out = Number(document.getElementById('calcIn3').value) || 0;
+    var p = document.getElementById('calcPeak').checked ? PRICE.peak : PRICE.idle;
+    var input = hit + miss;
+    var cHit = hit * p.cacheHit / 1e6, cMiss = miss * p.miss / 1e6, cOut = out * p.output / 1e6;
+    var totalCost = cHit + cMiss + cOut;
+    var noCache = (input * p.miss + out * p.output) / 1e6;
+    var pad = function(s, n){ s = String(s); while (s.length < n) s += ' '; return s; };
+    document.getElementById('calcResult').textContent =
+      '输入合计 ' + num(input) + '（命中率 ' + (input ? (hit / input * 100).toFixed(1) : '0.0') + '%）\n'
+      + pad('缓存命中输入', 14) + num(hit).padStart(12) + ' × ' + p.cacheHit + ' = ' + money(cHit) + '\n'
+      + pad('未命中输入', 14) + num(miss).padStart(12) + ' × ' + p.miss + ' = ' + money(cMiss) + '\n'
+      + pad('输出', 14) + num(out).padStart(12) + ' × ' + p.output + ' = ' + money(cOut) + '\n'
+      + '──────────────────────────────────────\n'
+      + pad('合计', 14) + ''.padStart(12) + '   ' + money(totalCost) + '\n'
+      + '全部按未命中算要 ' + money(noCache) + '，缓存省了 '
+      + (noCache > 0 ? ((1 - totalCost / noCache) * 100).toFixed(0) : '0') + '%';
+  }
+
+  // ── 群聊黑话库 ───────────────────────────────────────────────────────────
+  // 2026-09-23：库里已经 978 条，原来一次把所有行都塞进 DOM —— 既把页面撑得极长
+  // （用户反馈"黑话部分占太多了"），也让每次渲染都在拼上千行 HTML。现在三道收口：
+  //   ① 整块默认折叠（展开状态记在 localStorage，用户展开了就记住）；
+  //   ② 表格最多先渲染 SLANG_LIMIT 行，其余点「显示全部」再看；
+  //   ③ 表格自身限高 460px 可滚，展开也不会把后面的板块顶下去。
+  var SLANG = [];
+  var SLANG_LIMIT = 50;
+  var slangShowAll = false;
+  function hasMeaning(e){ return String((e && e.meaning) || '').trim().length > 0; }
+  function isCand(e){ return ((e && e.status) || 'candidate') === 'candidate'; }
+  function applySlangOpen(){
+    var open = localStorage.getItem('slangOpen') === '1';
+    var b = document.getElementById('slangBody');
+    var c = document.getElementById('slangCaret');
+    if (b) b.style.display = open ? '' : 'none';
+    if (c) c.textContent = open ? '▾' : '▸';
+  }
+  function renderSlang(){
+    var f = document.getElementById('slangFilter').value;
+    var all = SLANG;
+    var shown = all.filter(function(e){
+      if (f === 'candidate') return isCand(e);
+      if (f === 'confirmed') return e.status === 'confirmed';
+      if (f === 'empty') return !hasMeaning(e);
+      if (f === 'risky') return String(e.risk || '').trim().length > 0;
+      return true;
+    });
+    var count = function(pred){ return all.filter(pred).length; };
+    var cand = count(isCand);
+    var candOK = all.filter(function(e){ return isCand(e) && hasMeaning(e); }).length;
+    document.getElementById('slangBadge').textContent = all.length + ' 条 · 待确认 ' + cand;
+    document.getElementById('slangStats').innerHTML =
+      [['总数', all.length],
+       ['已生效', count(function(e){ return e.status === 'confirmed'; })],
+       ['待确认', cand],
+       ['其中能确认', candOK],
+       ['没解释', count(function(e){ return !hasMeaning(e); })],
+       ['已拒绝', count(function(e){ return e.status === 'rejected'; })],
+       ['带风险', count(function(e){ return String(e.risk || '').trim().length > 0; })]]
+      .map(function(r){ return '<span class="stat">' + r[0] + ' <b>' + r[1] + '</b></span>'; }).join('');
+    if (!shown.length){ document.getElementById('slangTable').innerHTML = '<span class="muted">（没有符合条件的条目）</span>'; return; }
+    var cap = slangShowAll ? shown.length : Math.min(shown.length, SLANG_LIMIT);
+    var rows = shown.slice(0, cap).map(function(e){
+      var st = e.status || 'candidate';
+      var stTxt = st === 'confirmed' ? '<span class="chip on">已生效</span>'
+        : st === 'rejected' ? '<span class="chip off">已拒绝</span>'
+        : (hasMeaning(e) ? '<span class="chip">待确认</span>' : '<span class="chip off">待研究</span>');
+      var idA = esc(e.id);
+      var acts = (isCand(e) && hasMeaning(e) ? '<button class="mini" data-act="confirm" data-id="' + idA + '">确认</button> ' : '')
+        + (st !== 'rejected' ? '<button class="mini" data-act="reject" data-id="' + idA + '">拒绝</button> ' : '')
+        + '<button class="mini" data-act="del" data-id="' + idA + '">删除</button>';
+      return '<tr>'
+        + '<td>' + esc(e.content || '') + (e.count ? ' <span class="muted">×' + e.count + '</span>' : '') + '</td>'
+        + '<td>' + stTxt + '</td>'
+        + '<td class="wrap">' + (hasMeaning(e) ? esc(e.meaning) : '<span class="muted">（空 · 需研究或手填）</span>') + '</td>'
+        + '<td class="wrap">' + (String(e.risk || '').trim()
+            ? '<span class="chip" style="background:#fef2f2;color:#b91c1c">' + esc(e.risk) + '</span>'
+            : '<span class="muted">—</span>') + '</td>'
+        + '<td style="text-align:right">' + acts + '</td>'
+        + '</tr>';
+    }).join('');
+    document.getElementById('slangTable').innerHTML =
+      '<table><thead><tr><th>词</th><th>状态</th><th class="wrap">解释</th><th class="wrap">风险提示</th><th style="text-align:right">操作</th></tr></thead><tbody>'
+      + rows + '</tbody></table>'
+      + (shown.length > cap
+          ? '<div class="row" style="margin-top:8px"><button id="slangMore">显示全部（共 ' + shown.length + ' 条，现在只渲染了 ' + cap + ' 条）</button></div>'
+          : (slangShowAll && shown.length > SLANG_LIMIT
+              ? '<div class="row" style="margin-top:8px"><button id="slangLess">收起，只看前 ' + SLANG_LIMIT + ' 条</button></div>'
+              : ''));
+  }
+  function loadSlang(){
+    api('/api/slang').then(function(s){
+      SLANG = Array.isArray(s.entries) ? s.entries : [];
+      renderSlang();
+    }).catch(function(e){
+      document.getElementById('slangTable').innerHTML = '<span class="muted">读取失败：' + esc(e.message) + '</span>';
+    });
+  }
+  function slangPost(path, body, okMsg){
+    api(path, { method: 'POST', body: body }).then(function(r){
+      var extra = r.confirmedCount !== undefined ? r.confirmedCount
+        : r.removedCount !== undefined ? r.removedCount
+        : r.rejectedCount !== undefined ? r.rejectedCount
+        : r.count !== undefined ? r.count : null;
+      toast(okMsg + (extra === null ? '' : '（' + extra + ' 条）'), 3000);
+      loadSlang();
+    }).catch(function(e){ toast('操作失败：' + e.message, 4500); });
+  }
+
+  // ── 记忆与群友印象 ───────────────────────────────────────────────────────
+  var MEM = {};
+  function renderMem(){
+    var box = document.getElementById('memBox');
+    var keys = Object.keys(MEM).filter(function(k){ return MEM[k]; });
+    if (!keys.length){ box.innerHTML = '<span class="muted">读不到记忆</span>'; return; }
+    var totalImp = 0;
+    var html = keys.map(function(k){
+      var raw = (MEM[k] && MEM[k].raw) || {};
+      var imps = raw.memberImpressions || {};
+      var names = Object.keys(imps);
+      var topics = Array.isArray(raw.activeTopics) ? raw.activeTopics : [];
+      var thoughts = Array.isArray(raw.pendingThoughts) ? raw.pendingThoughts : [];
+      totalImp += names.length;
+      var out = '<div style="margin-bottom:16px">'
+        + '<div class="row"><b>' + esc(name(k)) + '</b>'
+        + '<span class="muted">印象 ' + names.length + ' 人 · 话题 ' + topics.length + ' 条'
+        + (thoughts.length ? (' · 想说没说 ' + thoughts.length + ' 条') : '') + '</span></div>';
+      if (names.length){
+        out += '<table><thead><tr><th>群友</th><th class="wrap">印象（它记着的）</th>'
+          + '<th>记录次数</th><th>最后记录</th><th></th></tr></thead><tbody>';
+        names.sort(function(a,b){ return (Number(imps[b] && imps[b].lastSeenAt)||0) - (Number(imps[a] && imps[a].lastSeenAt)||0); });
+        names.forEach(function(n){
+          var im = imps[n] || {};
+          var traits = Array.isArray(im.traits) ? im.traits : [];
+          out += '<tr><td>' + esc(n) + '</td>'
+            + '<td class="wrap">' + (traits.length ? traits.map(function(t){ return '· ' + esc(t); }).join('<br>') : '<span class="muted">（空）</span>') + '</td>'
+            + '<td style="text-align:right">' + (Number(im.interactionCount) || 0) + '</td>'
+            + '<td class="muted">' + (im.lastSeenAt ? ago(im.lastSeenAt) : '—') + '</td>'
+            + '<td style="text-align:right"><button class="mini" data-memkey="' + esc(k) + '" data-target="' + esc(n) + '">删</button></td>'
+            + '</tr>';
+        });
+        out += '</tbody></table>';
+      } else {
+        out += '<div class="muted">还没记过任何群友的印象 —— 群友印象停更时，这里一眼就能看出来。</div>';
+      }
+      if (topics.length){
+        out += '<details style="margin-top:8px"><summary>进行中的话题（' + topics.length + '）</summary>'
+          + '<div class="muted" style="margin-top:6px">'
+          + topics.map(function(t){
+              var mins = t.lastMentionAt ? Math.round((Date.now() - t.lastMentionAt) / 60000) : 0;
+              return '· ' + esc(String(t.text || '').slice(0, 140)) + ' <span style="opacity:.6">(' + mins + '分钟前)</span>';
+            }).join('<br>')
+          + '</div></details>';
+      }
+      if (thoughts.length){
+        out += '<details style="margin-top:6px"><summary>想说但还没说的（' + thoughts.length + '）</summary>'
+          + '<div class="muted" style="margin-top:6px">'
+          + thoughts.map(function(t){ return '· ' + esc(String(t.text || '').slice(0, 140)); }).join('<br>')
+          + '</div></details>';
+      }
+      return out + '</div>';
+    }).join('');
+    box.innerHTML = html;
+    document.getElementById('memBadge').textContent = '共 ' + totalImp + ' 条印象';
+  }
+  function loadMem(){
+    var keys = (STATE.convs || []).map(function(c){ return c.key; });
+    if (!keys.length){ document.getElementById('memBox').innerHTML = '<span class="muted">还没有会话</span>'; return; }
+    Promise.all(keys.map(function(k){
+      return api('/api/socialV2/memory?key=' + encodeURIComponent(k))
+        .then(function(m){ MEM[k] = m; })
+        .catch(function(){ MEM[k] = null; });
+    })).then(renderMem);
+  }
+
+  // ── 白名单与群管理 ───────────────────────────────────────────────────────
+  var WL = { groups: [], allowGroups: [], denyGroups: [], allowPrivate: [], ownerQQ: null };
+  function renderWl(){
+    var box = document.getElementById('wlBox');
+    var rows = WL.groups.map(function(g){
+      var checked = WL.allowGroups.indexOf(Number(g.groupId)) >= 0;
+      var denied = WL.denyGroups.indexOf(Number(g.groupId)) >= 0;
+      var missing = false;
+      return '<tr>'
+        + '<td><input type="checkbox" class="wlGroup" value="' + esc(g.groupId) + '"' + (checked ? ' checked' : '') + '></td>'
+        + '<td>' + esc(g.groupName || '（没有群名）') + '</td>'
+        + '<td class="muted">' + esc(g.groupId) + '</td>'
+        + '<td>' + (checked ? '<span class="chip on">已允许</span>' : (denied ? '<span class="chip off">黑名单</span>' : '<span class="chip">未加入</span>')) + '</td>'
+        + '</tr>';
+    }).join('');
+    // 白名单里有、但机器人已经不在的群（也没列出来）标一下，避免"配置里有、实际收不到"
+    var known = WL.groups.map(function(g){ return Number(g.groupId); });
+    var stale = WL.allowGroups.filter(function(n){ return known.indexOf(n) < 0; });
+    document.getElementById('wlBadge').textContent = '允许 ' + WL.allowGroups.length + ' 群 · 私聊 ' + WL.allowPrivate.length + ' 个';
+    box.innerHTML = ''
+      + (WL.groups.length
+          ? '<table><thead><tr><th style="width:34px"></th><th>群名</th><th>群号</th><th>状态</th></tr></thead><tbody>' + rows + '</tbody></table>'
+          : '<div class="muted">机器人现在不在任何群里？先把它拉进群，再点「重新拉取」。</div>')
+      + (stale.length ? '<div class="muted" style="margin-top:8px;color:#b45309">⚠ 白名单里有 ' + stale.join('、') + '，但机器人已经不在这些群里了（收到消息也没用）。</div>' : '')
+      + '<div class="row" style="margin-top:12px">'
+      +   '<span class="muted" style="min-width:86px">私聊白名单</span>'
+      +   '<input id="wlPrivate" style="flex:1" value="' + esc(WL.allowPrivate.join(', ')) + '" placeholder="QQ 号，用逗号分隔">'
+      + '</div>'
+      + '<div class="muted" style="margin-top:8px">主人（管理员）QQ：<b>' + esc(WL.ownerQQ || '未设置') + '</b>　'
+      + '（主人 QQ 只能在完整控制台的「白名单 / 管理员」里改）</div>';
+  }
+  function loadWl(){
+    Promise.all([
+      api('/api/whitelist'),
+      api('/api/groups').catch(function(e){ return { ok: false, error: e.message, groups: [] }; })
+    ]).then(function(r){
+      var w = r[0] || {}, g = r[1] || {};
+      WL.allowGroups = (w.allow && w.allow.groups) || [];
+      WL.denyGroups = (w.deny && w.deny.groups) || [];
+      WL.allowPrivate = (w.allow && w.allow.private) || [];
+      WL.ownerQQ = w.ownerQQ;
+      WL.groups = g.groups || [];
+      WL.groupsError = g.ok === false ? g.error : '';
+      renderWl();
+      if (WL.groupsError) {
+        document.getElementById('wlBox').insertAdjacentHTML('afterbegin',
+          '<div class="muted" style="color:#b91c1c;margin-bottom:8px">拉取群列表失败：' + esc(WL.groupsError) + '（网关没连上？）</div>');
+      }
+    }).catch(function(e){
+      document.getElementById('wlBox').innerHTML = '<span class="muted">读取失败：' + esc(e.message) + '</span>';
+    });
+  }
+
+  function refresh(){
+    if (!TOKEN){ toast('缺少访问令牌：请通过带 ?token= 的链接打开本页', 5000); }
+    api('/api/status').then(renderBridge).catch(function(e){ document.getElementById('hText').textContent = '读取失败：' + e.message; });
+    api('/api/gateway').then(renderGw).catch(function(){});
+    api('/api/wx/status').then(renderWx).catch(function(){});
+    api('/api/usage').then(renderUsage).catch(function(e){
+      document.getElementById('usageTable').innerHTML = '<span class="muted">读不到用量：' + esc(e.message) + '</span>';
+    });
+    api('/api/socialV2/states').then(function(s){
+      STATE.convs = (s.conversations || []).slice();
+      renderLevels();
+      // 显示"最后更新"，这样一眼能看出数据是不是新的（以前刷新悄悄卡住都看不出来）
+      var lu = document.getElementById('lastUpd');
+      if (lu) lu.textContent = '最后更新 ' + new Date().toLocaleTimeString('zh-CN', { hour12: false });
+      var box = document.getElementById('rawJson');
+      if (box) box.textContent = JSON.stringify(STATE.convs, null, 2);
+      var act = document.getElementById('activity');
+      return api('/api/status').then(function(st){ act.textContent = st.activity || '（暂无）'; });
+    }).catch(function(e){ document.getElementById('levels').innerHTML = '<div class="card">读取失败：' + esc(e.message) + '</div>'; });
+  }
+
+  document.getElementById('refresh').addEventListener('click', function(){ refresh(); loadPrompt(); loadSlang(); loadMem(); loadWl(); });
+  document.getElementById('promptReload').addEventListener('click', loadPrompt);
+  document.getElementById('promptSave').addEventListener('click', function(){
+    var btn = this; btn.disabled = true;
+    api('/api/custom-prompt', { method:'POST', body:{ text: document.getElementById('promptText').value } })
+      .then(function(r){ toast('已保存 · 注入 ' + r.chars + ' 字（下次唤醒生效）', 3500); loadPrompt(); })
+      .catch(function(e){ toast('保存失败：' + e.message, 4000); })
+      .then(function(){ btn.disabled = false; });
+  });
+
+  var timer = null;
+  function setAuto(on){
+    if (timer) { clearInterval(timer); timer = null; }
+    if (on) timer = setInterval(function(){ if (!document.hidden) refresh(); }, 5000);
+  }
+  // 2026-09-18 修：以前只判断 document.hidden，后台标签页被浏览器限流后
+  // 切回来还要等下一个周期才更新（用户加了新群，切回来看还是旧的，
+  // 以为"新群的响应档位没加上"）。现在切回前台立刻刷一次。
+  document.addEventListener('visibilitychange', function(){
+    if (!document.hidden && document.getElementById('auto').checked) refresh();
+  });
+  document.getElementById('auto').addEventListener('change', function(){ setAuto(this.checked); });
+  ['calcIn1','calcIn2','calcIn3'].forEach(function(id){
+    document.getElementById(id).addEventListener('input', calcUpdate);
+  });
+  document.getElementById('calcPeak').addEventListener('change', calcUpdate);
+  document.getElementById('calcFill').addEventListener('click', function(){ calcFill(); calcUpdate(); });
+  document.getElementById('slangReload').addEventListener('click', loadSlang);
+  // 黑话库折叠：默认收起（978 条全铺开会把页面撑爆），展开状态记在 localStorage 里
+  document.getElementById('slangHead').addEventListener('click', function(){
+    localStorage.setItem('slangOpen', localStorage.getItem('slangOpen') === '1' ? '0' : '1');
+    applySlangOpen();
+  });
+  applySlangOpen();
+  document.getElementById('memReload').addEventListener('click', loadMem);
+  document.getElementById('wlReload').addEventListener('click', loadWl);
+  document.getElementById('wlSave').addEventListener('click', function(){
+    var groups = [];
+    Array.prototype.forEach.call(document.querySelectorAll('.wlGroup'), function(cb){
+      if (cb.checked) groups.push(Number(cb.value));
+    });
+    var priv = String(document.getElementById('wlPrivate').value || '')
+      .split(/[,，;；\s]+/).map(function(s){ return s.trim(); }).filter(Boolean);
+    api('/api/whitelist', { method: 'POST', body: { allow: { groups: groups, private: priv } } })
+      .then(function(){
+        toast('已保存：允许 ' + groups.length + ' 个群、' + priv.length + ' 个私聊（立即生效，不用重启）', 3800);
+        loadWl();
+      })
+      .catch(function(e){ toast('保存失败：' + e.message, 4500); });
+  });
+
+  // ── 微信白名单（交互说明见 renderWxWl 上方）─────────────────────────────
+  // 微信 bot 总开关：暂停要二次确认（它会让机器人"哑掉"），开启不用。
+  document.getElementById('wxToggle').addEventListener('click', function(){
+    var next = !WXEN;
+    if (!next && !confirm('暂停微信 bot？\n\n暂停后：不再处理微信消息、也不再往微信发任何东西。\n采集器会继续只读运行（不碰鼠标键盘），所以恢复时不会补发停用期间积压的消息。')) return;
+    api('/api/wx/enabled', { method: 'POST', body: { enabled: next } })
+      .then(function(r){
+        WXEN = !!(r && r.enabled);
+        toast('微信 bot 已' + (WXEN ? '开启' : '暂停'), 3200);
+        api('/api/wx/status').then(renderWx).catch(function(){});
+      })
+      .catch(function(e){ toast('切换失败：' + e.message, 4500); });
+  });
+  document.getElementById('wxWlReload').addEventListener('click', loadWxWl);
+  // 勾选框不重绘面板，只往文本框里增删名字：重绘会把正在手填的内容冲掉。
+  document.getElementById('wxWl').addEventListener('change', function(ev){
+    var cb = ev.target;
+    if (!cb || !cb.classList || !cb.classList.contains('wxChat')) return;
+    var inp = document.getElementById(cb.getAttribute('data-type') === 'group' ? 'wxAllowG' : 'wxAllowP');
+    if (!inp) return;
+    var name = cb.getAttribute('data-name');
+    var cur = wxSplit(inp.value);
+    var i = cur.indexOf(name);
+    if (cb.checked && i < 0) cur.push(name);
+    if (!cb.checked && i >= 0) cur.splice(i, 1);
+    inp.value = cur.join(', ');
+  });
+  document.getElementById('wxWlSave').addEventListener('click', function(){
+    var gEl = document.getElementById('wxAllowG');
+    var pEl = document.getElementById('wxAllowP');
+    var groups = wxSplit(gEl ? gEl.value : '');
+    var priv = wxSplit(pEl ? pEl.value : '');
+    api('/api/wx/whitelist', { method: 'POST', body: { allow: { groups: groups, private: priv } } })
+      .then(function(){
+        toast('微信白名单已保存：' + groups.length + ' 个群、' + priv.length + ' 个私聊（立即生效，不用重启桥）', 4000);
+        loadWxWl();
+      })
+      .catch(function(e){ toast('保存失败：' + e.message, 4500); });
+  });
+  loadWxWl();
+  document.getElementById('memBox').addEventListener('click', function(ev){
+    var btn = ev.target && ev.target.closest ? ev.target.closest('button[data-memkey]') : null;
+    if (!btn) return;
+    var k = btn.getAttribute('data-memkey');
+    var t = btn.getAttribute('data-target');
+    if (!confirm('删掉对「' + t + '」的印象？删了它就忘了这个人。')) return;
+    api('/api/socialV2/memory-remove', { method: 'POST', body: { key: k, category: 'memberImpression', target: t } })
+      .then(function(){ toast('已删掉对「' + t + '」的印象', 3000); loadMem(); })
+      .catch(function(e){ toast('删除失败：' + e.message, 4000); });
+  });
+  // 换筛选条件时收回到"只渲染前 N 条"：否则从「全部」切到「只看待确认」会沿用上次的展开态
+  document.getElementById('slangFilter').addEventListener('change', function(){ slangShowAll = false; renderSlang(); });
+  document.getElementById('slangConfirmAll').addEventListener('click', function(){
+    var ids = SLANG.filter(function(e){ return isCand(e) && hasMeaning(e); }).map(function(e){ return e.id; });
+    if (!ids.length){ toast('没有能确认的：候选里没有带解释的条目'); return; }
+    if (!confirm('把这 ' + ids.length + ' 条黑话确认入库？\n确认后机器人就能在群里用它们了。')) return;
+    slangPost('/api/slang/batch-confirm', { ids: ids }, '已确认入库');
+  });
+  document.getElementById('slangResearch').addEventListener('click', function(){
+    var ids = SLANG.filter(function(e){ return isCand(e) && !hasMeaning(e); }).map(function(e){ return e.id; });
+    if (!ids.length){ toast('没有要研究的：候选都已有解释'); return; }
+    slangPost('/api/slang/research', { ids: ids }, '已提交研究任务（后台跑，几十秒后刷新看）');
+  });
+  document.getElementById('slangTable').addEventListener('click', function(ev){
+    var tid = ev.target && ev.target.id;
+    if (tid === 'slangMore'){ slangShowAll = true; renderSlang(); return; }
+    if (tid === 'slangLess'){ slangShowAll = false; renderSlang(); return; }
+    var btn = ev.target && ev.target.closest ? ev.target.closest('button[data-act]') : null;
+    if (!btn) return;
+    var id = btn.getAttribute('data-id');
+    var act = btn.getAttribute('data-act');
+    var hit = SLANG.filter(function(e){ return e.id === id; })[0] || {};
+    var word = hit.content || '';
+    if (act === 'confirm') slangPost('/api/slang/batch-confirm', { ids: [id] }, '已确认「' + word + '」');
+    else if (act === 'reject') slangPost('/api/slang/batch-reject', { ids: [id] }, '已拒绝「' + word + '」');
+    else if (act === 'del'){
+      if (confirm('删除「' + word + '」？删了就没了。')) slangPost('/api/slang/batch-delete', { ids: [id] }, '已删除');
+    }
+  });
+
+  refresh(); loadPrompt(); loadSlang(); loadMem(); loadWl(); setAuto(true);
+})();
+</script>
+</body>
+</html>

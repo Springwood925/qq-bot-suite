@@ -1,0 +1,34 @@
+{
+  "name": "qq-bot-suite",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "DSH 插件：QQ 机器人套件 —— 启动 DSH 就自动拉起机器人，含可交互控制面板与首次配置向导",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./client.js"
+  },
+  "files": [
+    "lib/index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "bridge"
+  ],
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "qq",
+    "qqbot",
+    "snowluma"
+  ],
+  "license": "MIT",
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": []
+    }
+  }
+}

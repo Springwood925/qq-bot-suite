@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f172a">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>朋友聊天</title>
+<style>
+  :root{
+    --bg:#eef1f6; --card:#fff; --line:#e2e6ec; --text:#151a22; --dim:#6b7280;
+    --me:#2563eb; --bot:#fff; --accent:#2563eb;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{height:100%}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font:16px/1.65 -apple-system,"PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+    display:flex;flex-direction:column;overscroll-behavior:none}
+  header{flex:none;background:#0f172a;color:#fff;padding:12px 16px;
+    padding-top:calc(12px + env(safe-area-inset-top));
+    display:flex;align-items:center;gap:10px;font-weight:600}
+  header .sub{font-size:12px;font-weight:400;opacity:.7}
+  header .dot{width:8px;height:8px;border-radius:50%;background:#64748b}
+  header .dot.ok{background:#22c55e} header .dot.bad{background:#ef4444}
+  #log{flex:1;overflow-y:auto;padding:16px;-webkit-overflow-scrolling:touch}
+  .row{display:flex;margin-bottom:12px}
+  .row.me{justify-content:flex-end}
+  .bubble{max-width:86%;padding:11px 14px;border-radius:16px;white-space:pre-wrap;word-break:break-word;
+    box-shadow:0 1px 2px rgba(15,23,42,.06)}
+  .me .bubble{background:var(--me);color:#fff;border-bottom-right-radius:5px}
+  .bot .bubble{background:var(--bot);border:1px solid var(--line);border-bottom-left-radius:5px;font-size:16.5px}
+  .meta{font-size:11px;color:var(--dim);margin:2px 6px 0;text-align:right}
+  .bot .meta{text-align:left}
+  .sys{text-align:center;color:var(--dim);font-size:13px;margin:14px 0}
+  .err{background:#fef2f2;border-color:#fecaca !important;color:#b91c1c}
+  footer{flex:none;background:#fff;border-top:1px solid var(--line);
+    padding:10px 12px;padding-bottom:calc(10px + env(safe-area-inset-bottom));
+    display:flex;gap:8px;align-items:flex-end}
+  textarea{flex:1;resize:none;border:1px solid var(--line);border-radius:14px;padding:11px 13px;
+    font:inherit;max-height:120px;min-height:46px;background:#fafbfc;outline:none}
+  textarea:focus{border-color:var(--accent);background:#fff}
+  button{border:none;border-radius:14px;background:var(--accent);color:#fff;font:inherit;font-weight:600;
+    padding:0 18px;height:46px;flex:none;cursor:pointer}
+  button:disabled{opacity:.45}
+  .typing{display:inline-flex;gap:4px;align-items:center}
+  .typing i{width:6px;height:6px;border-radius:50%;background:#94a3b8;animation:b 1.2s infinite}
+  .typing i:nth-child(2){animation-delay:.2s} .typing i:nth-child(3){animation-delay:.4s}
+  @keyframes b{0%,60%,100%{transform:translateY(0);opacity:.5}30%{transform:translateY(-4px);opacity:1}}
+  .gate{position:fixed;inset:0;background:#0f172a;color:#fff;display:flex;flex-direction:column;
+    align-items:center;justify-content:center;gap:14px;padding:28px;text-align:center;z-index:9}
+  .gate input{border:none;border-radius:12px;padding:12px 14px;font:inherit;width:min(340px,86vw);text-align:center}
+  .gate small{opacity:.65;max-width:340px}
+</style>
+</head>
+<body>
+
+<header>
+  <span class="dot" id="dot"></span>
+  <span id="title">朋友聊天</span>
+  <span class="sub" id="who"></span>
+</header>
+
+<div id="log"></div>
+
+<footer>
+  <textarea id="input" rows="1" placeholder="说点什么…（Enter 发送，Shift+Enter 换行）"></textarea>
+  <button id="send">发送</button>
+</footer>
+
+<div class="gate" id="gate">
+  <div style="font-size:19px;font-weight:600">朋友聊天</div>
+  <input id="gateToken" placeholder="粘贴访问口令" autocomplete="off">
+  <input id="gateName" placeholder="你是谁（昵称）" autocomplete="off">
+  <button style="width:min(340px,86vw)" id="gateGo">进去</button>
+  <small>口令找发链接给你的人要。这个页面只是聊天，动不了任何别的东西。</small>
+</div>
+
+<script>
+(function(){
+  'use strict';
+  var qs = new URLSearchParams(location.search);
+  var t = qs.get('t');
+  if (t) localStorage.setItem('friendToken', t);
+  var TOKEN = localStorage.getItem('friendToken') || '';
+  var VISITOR = localStorage.getItem('friendVisitor');
+  if (!VISITOR) { VISITOR = 'v' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36); localStorage.setItem('friendVisitor', VISITOR); }
+  var NAME = localStorage.getItem('friendName') || '';
+  var busy = false;
+
+  var logEl = document.getElementById('log');
+  var inputEl = document.getElementById('input');
+  var sendEl = document.getElementById('send');
+  var gateEl = document.getElementById('gate');
+
+  function esc(s){ return String(s == null ? '' : s).replace(/[&<>"]/g, function(c){
+    return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c]; }); }
+  function hhmm(ms){
+    var d = new Date(ms || Date.now());
+    return String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0');
+  }
+  function atBottom(){ return logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 80; }
+  function scroll(force){ if (force || atBottom()) logEl.scrollTop = logEl.scrollHeight; }
+  function add(role, text, at){
+    var keep = atBottom();
+    var d = document.createElement('div');
+    d.className = 'row ' + (role === 'user' ? 'me' : 'bot');
+    d.innerHTML = '<div><div class="bubble' + (role === 'error' ? ' err' : '') + '">' + esc(text) + '</div>'
+      + '<div class="meta">' + hhmm(at) + '</div></div>';
+    logEl.appendChild(d);
+    scroll(keep);
+    return d;
+  }
+  function sys(text){
+    var d = document.createElement('div');
+    d.className = 'sys'; d.textContent = text;
+    logEl.appendChild(d); scroll(true);
+  }
+  function typing(on){
+    var old = document.getElementById('typingRow');
+    if (old) old.remove();
+    if (!on){ sendEl.disabled = false; return; }
+    var d = document.createElement('div');
+    d.className = 'row bot'; d.id = 'typingRow';
+    d.innerHTML = '<div><div class="bubble"><span class="typing"><i></i><i></i><i></i></span></div></div>';
+    logEl.appendChild(d); scroll(true);
+    sendEl.disabled = true;
+  }
+  function headers(json){
+    var h = { 'x-friend-token': TOKEN };
+    if (json) h['content-type'] = 'application/json';
+    return h;
+  }
+  function api(path, opts){
+    opts = opts || {};
+    return fetch(path, { method: opts.method || 'GET', headers: headers(!!opts.body), body: opts.body ? JSON.stringify(opts.body) : undefined })
+      .then(function(r){ return r.json().then(function(j){ if (!r.ok || j.ok === false) throw new Error((j && j.error) || ('HTTP ' + r.status)); return j; }); });
+  }
+
+  function showGate(){
+    gateEl.style.display = 'flex';
+    document.getElementById('gateToken').value = TOKEN || '';
+    document.getElementById('gateName').value = NAME || '';
+  }
+  document.getElementById('gateGo').addEventListener('click', function(){
+    var tk = document.getElementById('gateToken').value.trim();
+    var nm = document.getElementById('gateName').value.trim();
+    if (!tk) { alert('请填口令'); return; }
+    TOKEN = tk; NAME = nm || '朋友';
+    localStorage.setItem('friendToken', TOKEN);
+    localStorage.setItem('friendName', NAME);
+    gateEl.style.display = 'none';
+    boot();
+  });
+
+  function send(){
+    var text = inputEl.value.trim();
+    if (!text || busy) return;
+    busy = true;
+    add('user', text);
+    inputEl.value = ''; inputEl.style.height = 'auto';
+    typing(true);
+    api('/api/chat', { method:'POST', body:{ visitor: VISITOR, name: NAME, text: text } })
+      .then(function(r){ typing(false); add('bot', r.reply); })
+      .catch(function(e){ typing(false); add('error', '出错了：' + e.message); })
+      .then(function(){ busy = false; });
+  }
+  sendEl.addEventListener('click', send);
+  inputEl.addEventListener('keydown', function(e){
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
+  });
+  inputEl.addEventListener('input', function(){
+    this.style.height = 'auto';
+    this.style.height = Math.min(120, this.scrollHeight) + 'px';
+  });
+
+  function boot(){
+    document.getElementById('who').textContent = NAME ? ('· ' + NAME) : '';
+    logEl.innerHTML = '';
+    api('/api/chat/health').then(function(h){
+      var d = document.getElementById('dot');
+      d.className = 'dot ' + (h.muxReady ? 'ok' : 'bad');
+      d.title = h.muxReady ? '已连上' : '还没连上（等几秒）';
+    }).catch(function(){});
+    api('/api/chat/history?visitor=' + encodeURIComponent(VISITOR))
+      .then(function(r){
+        if (r.title) document.getElementById('title').textContent = r.title;
+        if (!r.history.length) { sys('直接说话就行。'); }
+        r.history.forEach(function(m){ add(m.role === 'user' ? 'user' : 'bot', m.text, m.at); });
+        scroll(true);
+      })
+      .catch(function(e){
+        if (/口令/.test(e.message)) { showGate(); return; }
+        sys('读历史失败：' + e.message);
+      });
+  }
+
+  if (!TOKEN) showGate(); else boot();
+})();
+</script>
+</body>
+</html>

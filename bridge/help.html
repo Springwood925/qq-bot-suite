@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>机器人起不来 · 看这里</title>
+<style>
+  body { font-family: "Microsoft YaHei", system-ui, sans-serif; max-width: 720px; margin: 40px auto; padding: 0 20px; line-height: 1.75; color: #222; }
+  h1 { font-size: 24px; margin-bottom: 4px; }
+  .sub { color: #888; font-size: 13px; margin-bottom: 28px; }
+  .card { border: 1px solid #e3e3e3; border-radius: 10px; padding: 18px 22px; margin: 18px 0; background: #fafafa; }
+  .big { font-size: 17px; font-weight: 700; }
+  a.btn { display: inline-block; background: #0ea5e9; color: #fff; text-decoration: none; padding: 10px 22px; border-radius: 8px; font-weight: 700; margin: 10px 0; }
+  code { background: #eef; padding: 2px 6px; border-radius: 4px; font-size: 13px; }
+  ol { padding-left: 22px; }
+  li { margin: 8px 0; }
+  .warn { border-color: #f0c36d; background: #fffaf0; }
+</style>
+</head>
+<body>
+
+<h1>机器人起不来 · 看这里</h1>
+<div class="sub">QQ 机器人（小鲸鱼）启动失败的排查页</div>
+
+<div class="card warn">
+  <div class="big">最常见的原因：SnowLuma 掉登录了</div>
+  <p>QQ 网关（SnowLuma）如果掉登录，它会「启动成功但不连 QQ」—— 端口不开，守护就以为它没起来，
+     于是反复重启，越堆越多。日志里会看到一堆
+     <code>[App] SnowLuma starting</code> 和 <code>port 5099 is in use</code>。</p>
+</div>
+
+<div class="card">
+  <div class="big">怎么办（90% 的情况是这一步）</div>
+  <ol>
+    <li>点下面的按钮，打开 SnowLuma 控制台</li>
+    <li>在里面把 QQ 账号 <strong>重新登录一次</strong>（扫码 / 确认）</li>
+    <li>登进去之后，回到桌面双击「启动QQ机器人」——它会自己接上</li>
+  </ol>
+  <a class="btn" href="http://127.0.0.1:5099/" target="_blank">打开 SnowLuma 控制台（5099）</a>
+  <p style="font-size:13px;color:#888;margin-top:6px">如果这个页面打不开，说明 SnowLuma 根本没在跑 —— 双击桌面「启动QQ机器人」再回来看。</p>
+</div>
+
+<div class="card">
+  <div class="big">怎么判断现在是什么状态</div>
+  <p>在这个文件夹里打开 PowerShell，粘这一行：</p>
+  <p><code>Get-NetTCPConnection -State Listen -LocalPort 3000,3001,3100 | Select LocalPort,OwningProcess</code></p>
+  <table style="border-collapse:collapse;font-size:14px;margin-top:8px">
+    <tr><td style="padding:4px 14px 4px 0"><strong>3001</strong></td><td>SnowLuma 网关（连 QQ）</td></tr>
+    <tr><td style="padding:4px 14px 4px 0"><strong>3100</strong></td><td>桥接本体（就是机器人）</td></tr>
+  </table>
+  <p style="margin-top:10px">
+    <strong>两个都在</strong> = 一切正常，去群里 @ 它一下试试。<br>
+    <strong>只有一个或没有</strong> = 按上面的步骤走。
+  </p>
+</div>
+
+<div class="card">
+  <div class="big">还是不行？看这两个日志</div>
+  <p>
+    桥接（机器人本体）：<br>
+    <code>&lt;桥目录&gt;\state\bridge.log</code>
+  </p>
+  <p>
+    QQ 网关：<br>
+    <code>&lt;SnowLuma 目录&gt;\logs\</code>（看日期最新的那个）
+  </p>
+  <p style="font-size:13px;color:#888">把日志发给我，我来看。</p>
+</div>
+
+</body>
+</html>
