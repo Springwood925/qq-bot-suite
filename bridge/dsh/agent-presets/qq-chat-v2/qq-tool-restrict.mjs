@@ -35,7 +35,16 @@ const SAFE_PREFIXES = [
   'mcp__snowluma__',
   'mcp__snowluma-host__',
   'mcp__web-search-safe__',
+  // meow-memory 的跨会话长期记忆（2026-09-25 加）：只读写本机记忆库
+  // ~/.dsh-meow/memory.db，碰不到这台电脑，不违反「QQ 会话零本地能力」。
+  'memory_',
 ]
+
+// ⚠️ 注意：**不要**在这里拦 `mcp__snowluma__qq_agent_*`（管理员私聊的本地执行工具）。
+// preset 是「按会话固定」的 —— 管理员私聊和群聊共用同一个 qq-chat-v2，
+// 在 preset 层无条件拒绝会把管理员本人一起挡掉（2026-10-20 实锤）。
+// 真正的闸门在桥侧 POST /api/agent/exec：校验 agentToken + key===private:ownerQQ，
+// 群聊 / 他人私聊一律 403。这里放行，交给桥判。
 
 // 无害模型侧工具：ask_user_question 用于把问题转给管理员/用户，
 // todo_write 仅维护任务列表。若后续 preset 不再挂载这些工具，保留无害。

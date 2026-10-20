@@ -24,6 +24,7 @@ import {
 import { looksLikeUnfinished } from './v2-wait.js';
 import { safeFetchBuffer, validateFetchUrl, looksLikeImageBuffer } from './safe-fetch.js';
 import { jevAllowProactive } from './jev-gate.js';
+import { createAgentExec } from './agent-exec.js';
 import { isGifBuffer, gifToTiledPng } from './media/gif-frames.js';
 import { synthesizeToFile, pruneCache } from './tts-dashscope.js';
 import { searchHistory, findMessagesDb } from './history-search.js';
@@ -1033,6 +1034,44 @@ async function main() {
   fs.mkdirSync(STATE_DIR, { recursive: true });
   acquireLock();
   loadState();
+
+  // ── 管理员私聊本地执行（2026-10-20 加）────────────────────────────────────
+  // 需求：让机器人在「管理员本人私聊」里像 agent 一样真干活（读/写/改文件、跑命令）。
+  // 安全边界（三条同时成立才放行）：
+  //   ① key === private:ownerQQ（只认管理员私聊）
+  //   ② 请求必须携带该会话正确的 agentToken
+  //   ③ 危险动作（覆盖/修改已有文件、破坏性命令）必须管理员先回一句确认词
+  // 实现主体在 src/agent-exec.js（新文件），这里只做状态、鉴权与路由。
+  const AGENT_APPROVAL_WINDOW_MS = 5 * 60 * 1000;
+  let agentApprovalGrantedAt = 0;   // 管理员最近一次确认的时间戳
+  let agentPendingInfo = null;      // 最近一个待确认动作 {at, action, detail}
+  let agentExecRef = null;
+
+  function ownerPrivateKey() {
+    return cfg.ownerQQ ? `private:${String(cfg.ownerQQ)}` : '';
+  }
+  function agentApprovalValid() {
+    return agentApprovalGrantedAt > 0 && Date.now() - agentApprovalGrantedAt < AGENT_APPROVAL_WINDOW_MS;
+  }
+  // 确认词：只在「确实有待确认动作」时才被消费（见消息处理处）。
+  // 否则"好""行""嗯"这类日常词会把不相干的行动批掉。
+  function looksLikeAgentApproval(value) {
+    const t = String(value ?? '').trim().replace(/[\s，。！？、,.!?~～：:]/g, '');
+    if (!t || t.length > 12) return false;
+    return /^(干|干吧|干它|干啊|干活|确认|确认执行|确认无误|批准|同意|可以|可以干|执行|执行吧|动手|动手吧|跑吧|改吧|删吧|来吧|ok|okay|yes|好|行|嗯|对|是)$/i.test(t);
+  }
+  function getAgentExec() {
+    if (!agentExecRef) {
+      agentExecRef = createAgentExec({
+        log,
+        rootDir: cfg.sessionCwd ? String(cfg.sessionCwd) : ROOT,
+        ownerKey: ownerPrivateKey,
+        isApproved: agentApprovalValid,
+        sendText: (key, value) => sendToQQ(key, value)
+      });
+    }
+    return agentExecRef;
+  }
 
   // ── 群聊黑话/网络用语学习（slang） ──────────────────────────────────────
   let slangEntries = loadSlang(SLANG_FILE);
@@ -2743,6 +2782,43 @@ async function main() {
             socialV2Paused: socialV2.paused,
             activity: readActivityTail(100)
           });
+          return;
+        }
+        // ── 管理员私聊本地执行（2026-10-20 加）────────────────────────────────
+        // 鉴权三层：① agentToken 必须匹配该 key 的会话；② key 必须等于 private:ownerQQ；
+        // ③ 危险动作还要管理员确认过。任何群 / 其他私聊都被第一层挡死。
+        if (req.method === 'POST' && url.pathname === '/api/agent/exec') {
+          const agentToken = String(req.headers['x-agent-token'] ?? '').trim();
+          if (!agentToken) { sendJson({ ok: false, error: '必须携带 agent token' }, 403); return; }
+          let agentBody;
+          try {
+            agentBody = await readBody();
+          } catch (error) {
+            sendJson({ ok: false, error: String(error?.message ?? '请求体无效') }, 400);
+            return;
+          }
+          const agentKey = String(agentBody?.key ?? '').trim();
+          const agentOwnerKey = ownerPrivateKey();
+          if (!agentOwnerKey || agentKey !== agentOwnerKey) {
+            log(`[agent-exec] 拒绝非管理员私聊请求：key=${agentKey}`);
+            sendJson({ ok: false, error: '本地执行能力仅在管理员私聊可用' }, 403);
+            return;
+          }
+          if (!agentTokenOk(agentKey, agentToken)) {
+            sendJson({ ok: false, error: 'agent token 无效' }, 403);
+            return;
+          }
+          const agentResult = await getAgentExec().handle({ op: agentBody?.op, args: agentBody?.args ?? {}, key: agentKey });
+          if (agentResult && agentResult.needsConfirm) {
+            agentPendingInfo = { at: Date.now(), action: agentResult.action, detail: agentResult.detail };
+            log(`[agent-exec] 待确认：${agentResult.action}（${String(agentResult.detail ?? '').slice(0, 60)}）`);
+          } else if (agentResult && agentResult.ok) {
+            // 执行成功即消费掉批准，避免同一张"通行证"被复用
+            agentApprovalGrantedAt = 0;
+            agentPendingInfo = null;
+            log(`[agent-exec] 已执行 op=${String(agentBody?.op ?? '')}`);
+          }
+          sendJson(agentResult ?? { ok: false, error: '无返回' }, 200);
           return;
         }
         if (req.method === 'GET' && url.pathname === '/api/presets') {
@@ -9812,6 +9888,26 @@ async function main() {
     return '';
   }
 
+  // 管理员私聊专属的「本地执行权限」注入段（2026-10-20 加）。
+  // 只对 private:ownerQQ 生效，群聊 / 其他私聊拿到的永远是空串。
+  function buildAgentPrivilegeLine(key) {
+    const ownerKey = ownerPrivateKey();
+    if (!ownerKey || key !== ownerKey) return '';
+    const approvedLine = agentApprovalValid() && agentPendingInfo
+      ? `【已获批准】管理员刚才确认了「${agentPendingInfo.action}」：${String(agentPendingInfo.detail ?? '').slice(0, 300)}\n现在可以直接重试那个操作（确认 5 分钟内有效），不用再问一遍。\n\n`
+      : '';
+    return (
+      '【本地执行权限 · 仅本私聊可用】\n' +
+      '你现在可以使用本地执行工具：qq_agent_read / qq_agent_write / qq_agent_edit / qq_agent_glob / qq_agent_grep / qq_agent_pwsh / qq_agent_ls。\n' +
+      `你可以真的干活：读文件、改代码、跑命令验证，默认工作目录 ${cfg.sessionCwd ? String(cfg.sessionCwd) : ROOT}。\n` +
+      '规则：\n' +
+      '1) 改已有文件、覆盖文件、破坏性命令（删除/移动/停服/格式化）不会直接执行——系统会先替你问一句，等他回「干」再重试；\n' +
+      '2) 每步做完用 qq_send_message 简短回报（改了哪个文件、验证结果如何），不要把大段日志或代码原文贴进 QQ；\n' +
+      '3) 这些工具只在这个私聊存在，群里和其他私聊不要提、也不要尝试调用（会被拒）。\n\n' +
+      approvedLine
+    );
+  }
+
   function buildWakePromptV2(key, reason) {
     const roleState = readRoleState();
     const roleLine = roleState.role ? `【当前角色】${roleState.role}（完整角色卡请调用 qq_get_prompt 查看）\n\n` : '';
@@ -9860,7 +9956,7 @@ async function main() {
     if (wcTr.anyMessage) wcTriggers.push('任意消息');
     if (Number(wcTr.probability) > 0) wcTriggers.push(`概率${wcTr.probability}`);
     const wakeLine = `【当前唤醒】${wcMode}，${wcTime}${wcTriggers.length ? `；触发：${wcTriggers.join('/')}` : ''}\n\n`;
-    const base = roleLine + tokenLine + antiAiLine + proactiveLine + stickerLine + preSleepLine + statusLine + wakeLine + memoryLine + participationLine;
+    const base = roleLine + tokenLine + antiAiLine + proactiveLine + stickerLine + preSleepLine + statusLine + wakeLine + memoryLine + participationLine + buildAgentPrivilegeLine(key);
     if (reason === 'bootstrap') {
       return `${base}【引导唤醒】你已接入 QQ 会话 ${key}。\n当前是二代仿真模式：你的文本输出不会自动发送到 QQ，所有发言必须通过工具完成。\n请先调用 qq_get_prompt 查看你的角色、推荐值、可用工具和当前状态，然后用 qq_set_wake_config 设置你希望如何被唤醒。`;
     }
@@ -10622,6 +10718,16 @@ async function main() {
     if (p && (p.kind === 'question' || isOwner)) {
       await handlePendingAnswer(p, plainContent, key, isOwner);
       return;
+    }
+
+    // 管理员私聊的确认词（2026-10-20 加）：只有在「确实有待确认的本地操作」时才生效，
+    // 避免"好""行""嗯"这类日常回复把不相干的动作批掉。
+    if (isOwner && kind === 'private' && key === ownerPrivateKey() && agentPendingInfo) {
+      if (Date.now() - agentPendingInfo.at < AGENT_APPROVAL_WINDOW_MS && looksLikeAgentApproval(plainContent)) {
+        agentApprovalGrantedAt = Date.now();
+        log(`[agent-exec] 管理员已确认执行：${agentPendingInfo.action}`);
+        appendActivity(`${key} 管理员确认本地操作：${agentPendingInfo.action}`);
+      }
     }
 
     // 静默模式：群友消息不投递给 agent（只记录）；管理员消息照常

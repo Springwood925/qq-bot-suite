@@ -1559,4 +1559,91 @@ if (cfg.socialV2?.tools?.getForwardMsg !== false) {
   );
 }
 
+// ── 管理员私聊本地执行（2026-10-20 加）─────────────────────────────────────
+// 设计要点：
+//  · 只有「管理员私聊」能真正执行 —— 桥侧 /api/agent/exec 会校验 agent token
+//    对应的会话 key，任何群聊 / 其他私聊调用一律硬拒（提示词里也别去试）。
+//  · 危险操作（覆盖已有文件、改已有文件、破坏性命令）不会直接执行：工具返回
+//    「需要确认」，桥会顺手给管理员发一条确认消息，等他回「干」再重试。
+//  · 输出统一截断，避免把上下文撑爆。
+
+const AGENT_TIMEOUT_MS = 60000;
+const AGENT_SHELL_TIMEOUT_MS = 650000;
+
+async function agentExec({ key, token, op, args, timeoutMs }) {
+  const data = await agentApi('/api/agent/exec', {
+    method: 'POST',
+    body: JSON.stringify({ key, op, args }),
+    headers: { 'x-agent-token': token },
+    timeoutMs: timeoutMs || AGENT_TIMEOUT_MS
+  });
+  if (data?.needsConfirm) {
+    return `⏸ 需要管理员确认：${data.action}\n${data.detail}\n\n确认请求已替你发给他了，等他回一句「干」再重试这个操作。`;
+  }
+  return JSON.stringify(data, null, 2);
+}
+
+async function runAgentTool(a, op, args, timeoutMs) {
+  try {
+    const text = await agentExec({ key: a.key, token: a.token, op, args, timeoutMs });
+    return { content: [{ type: 'text', text }] };
+  } catch (error) {
+    return { content: [{ type: 'text', text: `本地执行失败：${error?.message ?? error}` }], isError: true };
+  }
+}
+
+const AGENT_AUTH = {
+  key: z.string().describe('会话 key（private:管理员QQ）'),
+  token: z.string().describe('会话令牌')
+};
+
+server.tool(
+  'qq_agent_read',
+  '【仅管理员私聊】读本地文件，返回带行号的内容。其他会话调用会被拒，别试。',
+  { ...AGENT_AUTH, file_path: z.string().describe('文件路径'), offset: z.number().optional().describe('起始行，默认 1'), limit: z.number().optional().describe('最多行数，默认 2000') },
+  async (a) => runAgentTool(a, 'read', { file_path: a.file_path, offset: a.offset, limit: a.limit })
+);
+
+server.tool(
+  'qq_agent_write',
+  '【仅管理员私聊】写本地文件（新建或整文件覆盖）。覆盖已有文件需管理员先确认。其他会话会被拒。',
+  { ...AGENT_AUTH, file_path: z.string().describe('文件路径'), content: z.string().describe('完整文件内容') },
+  async (a) => runAgentTool(a, 'write', { file_path: a.file_path, content: a.content })
+);
+
+server.tool(
+  'qq_agent_edit',
+  '【仅管理员私聊】在文件里精确替换文本。old_string 必须一字不差且唯一，需管理员确认后执行。',
+  { ...AGENT_AUTH, file_path: z.string().describe('文件路径'), old_string: z.string().describe('被替换的原文（含缩进）'), new_string: z.string().describe('替换成什么'), replace_all: z.boolean().optional().describe('替换全部匹配，默认 false') },
+  async (a) => runAgentTool(a, 'edit', { file_path: a.file_path, old_string: a.old_string, new_string: a.new_string, replace_all: a.replace_all })
+);
+
+server.tool(
+  'qq_agent_glob',
+  '【仅管理员私聊】按通配符找文件（如 **/*.js）。其他会话会被拒。',
+  { ...AGENT_AUTH, pattern: z.string().describe('通配符，如 **/*.js'), path: z.string().optional().describe('搜索根目录'), max_results: z.number().optional().describe('最多返回条数') },
+  async (a) => runAgentTool(a, 'glob', { pattern: a.pattern, path: a.path, max_results: a.max_results })
+);
+
+server.tool(
+  'qq_agent_grep',
+  '【仅管理员私聊】用正则搜索文件内容。其他会话会被拒。',
+  { ...AGENT_AUTH, pattern: z.string().describe('正则'), path: z.string().optional().describe('搜索根目录'), glob: z.string().optional().describe('只搜匹配的文件名'), max_matches: z.number().optional().describe('最多匹配数') },
+  async (a) => runAgentTool(a, 'grep', { pattern: a.pattern, path: a.path, glob: a.glob, max_matches: a.max_matches })
+);
+
+server.tool(
+  'qq_agent_pwsh',
+  '【仅管理员私聊】执行 PowerShell 命令并返回 stdout/stderr/退出码。破坏性命令需管理员先确认。其他会话会被拒。',
+  { ...AGENT_AUTH, command: z.string().describe('要执行的命令'), cwd: z.string().optional().describe('工作目录（不填则用桥配置的默认根目录）'), timeoutMs: z.number().optional().describe('超时毫秒，默认 120000') },
+  async (a) => runAgentTool(a, 'pwsh', { command: a.command, cwd: a.cwd, timeoutMs: a.timeoutMs }, AGENT_SHELL_TIMEOUT_MS)
+);
+
+server.tool(
+  'qq_agent_ls',
+  '【仅管理员私聊】列目录内容（含大小与修改时间）。其他会话会被拒。',
+  { ...AGENT_AUTH, path: z.string().optional().describe('目录路径') },
+  async (a) => runAgentTool(a, 'ls', { path: a.path })
+);
+
 await server.connect(new StdioServerTransport());
