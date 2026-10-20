@@ -126,6 +126,14 @@ window.__ModuleLoader__.load({
       const [setupForm, setSetupForm] = useState({ snowDir: '', uin: '', ownerQQ: '', groups: '' });
       const [setupOut, setSetupOut] = useState('');
       const [setupBusy, setSetupBusy] = useState(false);
+      // ── 提示词注入（2026-10-21 加）──────────────────────────────────────
+      const [promptKey, setPromptKey] = useState('');
+      const [promptData, setPromptData] = useState(null);
+      const [promptBusy, setPromptBusy] = useState(false);
+      // ── 总提示词（我的提示词.md）直接编辑（2026-10-21 加）────────────────
+      const [cp, setCp] = useState(null);          // 服务端最新读到的一份
+      const [cpDraft, setCpDraft] = useState('');  // 编辑中的文本（原文，含注释）
+      const [cpSaving, setCpSaving] = useState(false);
 
       const flash = (t) => { setMsg(t); setTimeout(() => setMsg(''), 2500); };
 
@@ -138,9 +146,58 @@ window.__ModuleLoader__.load({
           .finally(() => setBusy(false));
       }, []);
 
+      // 拉取某会话最近一次「真实注入」的全文（桥侧抓的，令牌已遮）
+      // ⚠️ 这里必须自己判 HTTP 状态、别直接 r.json()：
+      //   前端 client.js 与 host lib/index.js 是**分开加载**的 ——
+      //   刷新页面就能拿到新前端，但 host 那段要重启 DSH 才换。
+      //   两边不同步时这个端点会 404、响应体是空的，r.json() 会抛
+      //   "Unexpected end of JSON input"（2026-10-21 用户当场撞到）。
+      const loadPrompt = (key) => {
+        const k = String(key || '').trim();
+        if (!k) { flash('先选一个会话'); return; }
+        setPromptBusy(true);
+        fetch('/qq-bot-suite/last-prompt?key=' + encodeURIComponent(k), { headers: { accept: 'application/json' } })
+          .then(async (r) => {
+            if (r.status === 404) {
+              throw new Error('插件主机端还没重载（这个框的后端要重启 DSH 才生效）');
+            }
+            const text = await r.text();
+            if (!text) throw new Error('宿主返回了空响应（HTTP ' + r.status + '）');
+            try { return JSON.parse(text); } catch (e) { throw new Error('宿主返回的不是 JSON（HTTP ' + r.status + '）'); }
+          })
+          .then((j) => setPromptData(j))
+          .catch((e) => setPromptData({ ok: false, error: (e && e.message) || '读取失败' }))
+          .finally(() => setPromptBusy(false));
+      };
+
+      // 总提示词：读（原文 raw，保留注释）→ 编辑 → 写回。
+      // ⚠️ 桥每轮现读该文件，所以保存后**下一轮就生效**，不用重启桥。
+      // ⚠️ 保存由桥侧自动备份旧版本（最多留 5 份），这里只提示，不做备份。
+      const loadCustomPrompt = useCallback(() => {
+        apiGet('/api/custom-prompt')
+          .then((d) => { setCp(d); setCpDraft(String((d && d.raw) || '')); })
+          .catch(() => {});
+      }, []);
+
+      const saveCustomPrompt = () => {
+        if (!cp || cpSaving) return;
+        const text = String(cpDraft || '');
+        if (!text.trim()) { flash('内容为空，不保存'); return; }
+        if (!window.confirm('保存后下一轮就生效（桥每轮现读，不用重启）。\n旧版本会自动备份，最多留 5 份。\n\n继续？')) return;
+        setCpSaving(true);
+        apiPost('/api/custom-prompt', { text })
+          .then((d) => {
+            flash('已保存 · 注入 ' + ((d && d.chars) || 0) + ' 字' + (d && d.backup ? '（旧版已备份）' : ''));
+            loadCustomPrompt();
+          })
+          .catch((e) => flash('保存失败：' + ((e && e.message) || '未知')))
+          .finally(() => setCpSaving(false));
+      };
+
       const loadSide = useCallback(() => {
         apiGet('/api/slang').then((d) => setSlang(d)).catch(() => {});
         apiGet('/api/whitelist').then((d) => setWl(d)).catch(() => {});
+        loadCustomPrompt();
       }, []);
 
       // 环境检测：只在「插件自带桥」的机器上有意义（开发机 isBundled=false，向导不显示）
@@ -311,6 +368,100 @@ window.__ModuleLoader__.load({
             h('span', { style: S.pill }, br.dshReady ? 'DSH 就绪' : 'DSH 未就绪'),
             h('span', { style: Object.assign({}, S.pill, br.socialV2Paused ? { color: '#d29922' } : {}) }, br.socialV2Paused ? '⏸ 已暂停' : '▶ 运行中'),
           ) : null,
+        ),
+
+        // ══ 总提示词（我的提示词.md）══
+        // 直接在面板里改，不用再去翻文件。桥每轮现读 ⇒ 保存后**下一轮就生效，不用重启桥**。
+        // 写回的是 raw 原文（注释一并保留）；保存前桥会自动备份旧版本（最多留 5 份）。
+        h('div', { style: S.card },
+          h('div', { style: S.head },
+            h('span', { style: S.title }, '总提示词'),
+            h('span', { style: Object.assign({}, S.tiny, S.dim) },
+              cp ? (cp.file + ' · 注入 ' + cp.chars + ' 字 / 原文 ' + cp.rawChars + ' 字') : '读取中…'),
+            cp && cpDraft !== String(cp.raw || '')
+              ? h('span', { style: Object.assign({}, S.pill, { color: '#d29922' }) }, '未保存')
+              : null,
+            h('span', { style: { marginLeft: 'auto' } }),
+            h('span', {
+              style: Object.assign({}, S.tiny, { opacity: 0.85, cursor: 'pointer' }),
+              onClick: () => { loadCustomPrompt(); flash('已重新读取'); },
+            }, '重新读取 ↻'),
+          ),
+          cp
+            ? h('textarea', {
+                value: cpDraft,
+                onChange: (e) => setCpDraft(e.target.value),
+                spellCheck: false,
+                style: { width: '100%', minHeight: 260, maxHeight: 420, padding: '9px 11px', borderRadius: 7, border: '1px solid rgba(128,128,128,.3)', background: 'rgba(128,128,128,.06)', color: 'inherit', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 11.5, lineHeight: 1.6, resize: 'vertical', boxSizing: 'border-box' },
+              })
+            : h('div', { style: S.dim }, '读取中…'),
+          h('div', { style: S.row },
+            h('button', {
+              style: S.btn,
+              disabled: !cp || cpSaving || cpDraft === String((cp && cp.raw) || ''),
+              onClick: saveCustomPrompt,
+            }, cpSaving ? '保存中…' : '保存'),
+            h('span', { style: Object.assign({}, S.tiny, S.dim) }, '保存后下一轮生效，不用重启桥 · 旧版自动备份'),
+          ),
+        ),
+
+        // ══ 提示词注入（2026-10-21 加）══
+        // 显示机器人这一轮**实际收到**的全文。桥侧在真正发送前抓的快照，
+        // 不是 /api/debug/prompt 那个只拼半段的残缺预览；会话令牌已遮。
+        h('div', { style: S.card },
+          h('div', { style: S.head },
+            h('span', { style: S.title }, '提示词注入'),
+            h('span', { style: Object.assign({}, S.tiny, S.dim) }, '这一轮实际收到的全文'),
+            h('span', { style: { marginLeft: 'auto' } }),
+            h('span', {
+              style: Object.assign({}, S.tiny, { opacity: promptBusy ? 0.45 : 0.85, cursor: 'pointer' }),
+              onClick: () => loadPrompt(promptKey),
+            }, promptBusy ? '拉取中…' : '刷新 ↻'),
+          ),
+          h('div', { style: S.row },
+            h('select', {
+              value: promptKey,
+              onChange: (e) => { setPromptKey(e.target.value); setPromptData(null); },
+              style: { padding: '3px 6px', borderRadius: 6, border: '1px solid rgba(128,128,128,.4)', background: 'transparent', color: 'inherit', fontSize: 12, fontFamily: 'inherit', minWidth: 190 },
+            },
+              h('option', { value: '' }, convs.length ? '— 选一个会话 —' : '没有会话'),
+              convs.map((c) => h('option', { key: c.key, value: c.key }, shortKey(c.key))),
+            ),
+            h('button', {
+              style: S.btn,
+              disabled: !promptKey || promptBusy,
+              onClick: () => loadPrompt(promptKey),
+            }, '拉取'),
+            promptData && promptData.ok
+              ? h('span', { style: Object.assign({}, S.pill, promptData.source === 'actual' ? {} : { color: '#d29922' }) },
+                  promptData.source === 'actual'
+                    ? '实际注入 · ' + (promptData.reason || '—')
+                    : '预览（该会话还没被真实唤醒过）')
+              : null,
+            promptData && promptData.ok && promptData.at
+              ? h('span', { style: Object.assign({}, S.tiny, S.dim) }, new Date(promptData.at).toLocaleTimeString())
+              : null,
+            promptData && promptData.ok
+              ? h('span', { style: Object.assign({}, S.tiny, S.dim) }, promptData.length + ' 字')
+              : null,
+            promptData && promptData.ok
+              ? h('button', {
+                  style: S.btnSm,
+                  onClick: () => {
+                    try {
+                      navigator.clipboard.writeText(promptData.text).then(() => flash('已复制')).catch(() => flash('复制失败'));
+                    } catch (e) { flash('复制失败'); }
+                  },
+                }, '复制')
+              : null,
+          ),
+          promptData && promptData.ok === false ? h('div', { style: S.err }, promptData.error || '读取失败') : null,
+          promptData && promptData.ok
+            ? h('pre', {
+                style: { margin: 0, maxHeight: 380, overflow: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 11, lineHeight: 1.6, background: 'rgba(128,128,128,.08)', border: '1px solid rgba(128,128,128,.22)', borderRadius: 7, padding: '9px 11px', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' },
+              }, promptData.text)
+            : h('div', { style: Object.assign({}, S.tiny, S.dim) },
+                '选会话 → 拉取，就能看到机器人这一轮收到的完整提示词（人格 + 记忆 + 表情策略 + 唤醒原因…）。令牌已自动遮掉。'),
         ),
 
         // ══ 响应档位（滑条，松手即保存）══

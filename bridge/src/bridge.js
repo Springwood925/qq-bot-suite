@@ -2679,6 +2679,27 @@ async function main() {
             const body = await readBody();
             const text = String(body.text ?? '');
             if (text.length > 200000) { sendJson({ ok: false, error: '内容太长（上限 20 万字符）' }, 400); return; }
+            // 改前自动备份（2026-10-21 加）：提示词是全系统核心，面板里手滑覆盖就没了。
+            // 保留最近 5 份，超出删最旧；备份失败不阻断写入（但会记日志）。
+            let backupName = null;
+            try {
+              if (fs.existsSync(full)) {
+                const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+                const bak = `${full}.bak-${stamp}`;
+                fs.copyFileSync(full, bak);
+                backupName = path.basename(bak);
+                const base = path.basename(full) + '.bak-';
+                const olds = fs.readdirSync(path.dirname(full))
+                  .filter((n) => n.startsWith(base))
+                  .sort()
+                  .reverse();
+                for (const old of olds.slice(5)) {
+                  try { fs.unlinkSync(path.join(path.dirname(full), old)); } catch {}
+                }
+              }
+            } catch (e) {
+              log(`[控制台] 提示词备份失败（仍继续写入）：${e?.message ?? e}`);
+            }
             try {
               fs.mkdirSync(path.dirname(full), { recursive: true });
               fs.writeFileSync(full, text, 'utf8');
@@ -2690,7 +2711,7 @@ async function main() {
             // 下一次唤醒就会用新内容，不需要重启桥接。
             const cleaned = stripComments(text);
             log(`[控制台] 自定义提示词已更新：${path.basename(full)}（注入 ${cleaned.length} 字）`);
-            sendJson({ ok: true, file: path.basename(full), path: full, chars: cleaned.length, rawChars: text.length, mtime: Date.now() });
+            sendJson({ ok: true, file: path.basename(full), path: full, chars: cleaned.length, rawChars: text.length, mtime: Date.now(), backup: backupName });
             return;
           }
         }
@@ -3577,6 +3598,41 @@ async function main() {
             customPromptChars: readCustomPrompt().length,
             text
           });
+          return;
+        }
+        // 最近一次「真实注入」全文（2026-10-21 加）：给控制台 / 插件面板看。
+        // 与上面 /api/debug/prompt 的关键区别：那个只拼 inline 段，**不是**真正发出去的那份。
+        // 没有实际记录时回退到「预览」（inline + wake@preview），用 source 字段标明来源。
+        if (req.method === 'GET' && url.pathname === '/api/debug/last-prompt') {
+          const key = canonicalV2Key(url.searchParams.get('key') ?? '');
+          if (!key) { sendJson({ ok: false, error: 'key 无效（应形如 group:群号 / private:QQ号）' }, 400); return; }
+          const snap = getLastPromptSnapshot(key);
+          if (snap) {
+            sendJson({
+              ok: true,
+              key,
+              source: 'actual',
+              at: snap.at,
+              reason: snap.reason,
+              length: snap.text.length,
+              text: maskAgentToken(snap.text)
+            });
+            return;
+          }
+          try {
+            const preview = buildInlineContextV2(key) + buildWakePromptV2(key, 'preview');
+            sendJson({
+              ok: true,
+              key,
+              source: 'preview',
+              at: 0,
+              reason: 'preview',
+              length: preview.length,
+              text: maskAgentToken(preview)
+            });
+          } catch (error) {
+            sendJson({ ok: false, error: `构造提示词失败：${error?.message ?? error}` }, 500);
+          }
           return;
         }
         if (req.method === 'POST' && url.pathname === '/api/console/notify-ai') {
@@ -10042,6 +10098,31 @@ async function main() {
    * 条数上限走 socialV2.wake.inlineContextLimit（默认 25 条已读），
    * 设为 0 可关闭本功能、退回原来的"让模型自己去查"。
    */
+  // ── 最近一次「真实注入」快照（2026-10-21 加）──────────────────────────────
+  // 给控制台 / 插件面板看：机器人这一轮到底收到了什么。
+  // ⚠️ 为什么不复用 /api/debug/prompt：那个只拼 buildInlineContextV2，
+  //    看不到 buildWakePromptV2 那一段（唤醒注入、表情策略、沉睡等待…），
+  //    所以它显示的**不是**真实注入。这里在真正发送前抓一份完整的。
+  // ⚠️ 只留在内存（每会话 1 条、总数上限 60），不落盘 —— 文本里有会话令牌。
+  const lastPromptByKey = new Map();
+  function rememberLastPrompt(key, reason, text) {
+    try {
+      lastPromptByKey.set(key, { at: Date.now(), reason: String(reason ?? ''), text: String(text ?? '') });
+      while (lastPromptByKey.size > 60) {
+        const oldest = lastPromptByKey.keys().next().value;
+        if (oldest === undefined) break;
+        lastPromptByKey.delete(oldest);
+      }
+    } catch {}
+  }
+  /** 把 32 位 hex 会话令牌遮掉 —— 面板可能被截图，令牌不该出现在画面里 */
+  function maskAgentToken(text) {
+    return String(text ?? '').replace(/\b[0-9a-f]{32}\b/g, '***（令牌已遮）***');
+  }
+  function getLastPromptSnapshot(key) {
+    return lastPromptByKey.get(key) ?? null;
+  }
+
   function buildInlineContextV2(key) {
     const custom = readCustomPrompt();
     // ── 按会话的专属人格（2026-09-23 加）───────────────────────────────────
@@ -10185,6 +10266,8 @@ async function main() {
     st.lastWakeReason = reason;
     saveSocialV2State();
     const promptText = buildInlineContextV2(key) + buildWakePromptV2(key, reason);
+    // 抓一份真实注入快照（控制台 / 插件面板用；内存态，不落盘）
+    rememberLastPrompt(key, reason, promptText);
     log(`[reserved2] 唤醒 ${key}（${reason}）`);
     const rollbackWakeTime = () => {
       const idx = st.wakeTimes.lastIndexOf(wakeTime);
