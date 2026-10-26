@@ -1,0 +1,6 @@
+{
+  "enabled": false,
+  "vision": true,
+  "generation": true,
+  "forceHttp": true
+}

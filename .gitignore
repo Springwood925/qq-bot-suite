@@ -1,5 +1,5 @@
 # 依赖
-/node_modules/
+node_modules/
 
 # 运行数据（绝不提交：里面有你的 QQ 号、群号、聊天记录）
 bridge/state/
@@ -23,3 +23,25 @@ desktop.ini
 .vscode/
 .idea/
 *.swp
+
+# Local memory models and native runtime are installed on each machine
+bridge/local-memory-runtime/
+bridge/models/
+bridge/codex-media.json
+bridge/_发送/
+bridge/assets/
+bridge/tools/
+bridge/wechatauto_logs/
+**/.env
+**/.env.*
+!**/.env.example
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+*.zip
+*.bak*
+/privacy-*.json
+/deployment.json
+/acceptance.json
+

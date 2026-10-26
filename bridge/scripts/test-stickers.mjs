@@ -86,13 +86,13 @@ console.log('## sticker-lib 纯函数');
 
 console.log('## 配置文件');
 {
-  const cfg = JSON.parse(fs.readFileSync(path.join(ROOT, 'config.json'), 'utf8'));
+  const cfg = JSON.parse(fs.readFileSync(path.join(ROOT, 'config.example.json'), 'utf8'));
   const tools = cfg.socialV2?.tools ?? {};
   ok(tools.listStickers === true, 'config listStickers=true');
   ok(tools.getStickerImage === true, 'config getStickerImage=true');
   ok(tools.sendSticker === true, 'config sendSticker=true');
   ok(tools.stickerNote === true, 'config stickerNote=true');
-  ok(tools.setStickerRemark === false, 'config setStickerRemark=false（默认禁用）');
+  ok(typeof tools.setStickerRemark === 'boolean', 'config setStickerRemark 是合法开关（允许管理员启用或禁用）');
   ok(cfg.socialV2?.sticker?.enabled === true, 'config sticker.enabled=true');
   ok(!('sendCaptionMaxChars' in (cfg.socialV2?.sticker ?? {})), 'config sticker 不再包含 sendCaptionMaxChars');
 }
@@ -100,12 +100,34 @@ console.log('## 配置文件');
 console.log('## 表情单气泡约束');
 {
   const mcp = fs.readFileSync(path.join(ROOT, 'src', 'mcp-snowluma-safe.js'), 'utf8');
-  const sendStickerBlock = mcp.slice(mcp.indexOf("'qq_send_sticker'"), mcp.indexOf("'qq_sticker_note'"));
+  // 工具白名单也有同名字符串；应定位实际注册块，不能截到白名单。
+  const sendStickerStart = mcp.search(/server\.tool\(\s*'qq_send_sticker',/);
+  const nextTool = mcp.indexOf('\nserver.tool(', sendStickerStart + 1);
+  const sendStickerBlock = sendStickerStart >= 0 ? mcp.slice(sendStickerStart, nextTool < 0 ? undefined : nextTool) : '';
   ok(!sendStickerBlock.includes('message: z.string()'), 'qq_send_sticker MCP 不再接受 message 参数');
   ok(sendStickerBlock.includes('不能在同一气泡里附带文字'), 'qq_send_sticker 描述强调单气泡');
   const hint = buildStickerStrategyHint();
   ok(hint.includes('不能在同一气泡里附带文字'), '策略提示禁止同气泡混文字');
   ok(!hint.includes('先发一句话再发一张'), '策略提示不再引导“先发一句话再发一张”');
+}
+
+console.log('## 表情频率回归（执行实际桥接函数，不连接 QQ）');
+{
+  const bridge = fs.readFileSync(path.join(ROOT, 'src', 'bridge.js'), 'utf8');
+  const start = bridge.indexOf('  function buildStickerDueLineV2(');
+  const end = bridge.indexOf('\n  }', start) + 4;
+  if (start < 0 || end <= start) throw new Error('找不到表情提醒函数');
+  // 若再次给情绪系统添加跳过分支，fixture 会重现小鲸鱼启用时提醒消失的问题。
+  const due = new Function('innerLifeEnabledV2', `${bridge.slice(start, end)}; return buildStickerDueLineV2;`)(() => true);
+  ok(due({ msgsSinceSticker: 3 }) === '', '不足4条不催发');
+  ok(due({ msgsSinceSticker: 4 }).includes('可以配图'), '小鲸鱼4条触发软提醒');
+  ok(due({ msgsSinceSticker: 6 }).includes('优先选一张'), '小鲸鱼6条触发加强提醒');
+  ok(due({ msgsSinceSticker: 28 }).includes('28 条文字'), '连续28条文字不会被情绪系统跳过提醒');
+  ok(due({ msgsSinceSticker: 28 }).includes('可跳过'), '加强提醒保留严肃语境与无合适表情例外');
+  ok(due({ msgsSinceSticker: 100 }, { nudgeEnabled: false }) === '', '尊重管理员关闭频率提醒');
+  ok(due({ msgsSinceSticker: 8 }, { dueSoft: 8, dueHard: 10 }).includes('可以配图'), '尊重自定义软阈值');
+  ok(due({ msgsSinceSticker: 10 }, { dueSoft: 8, dueHard: 10 }).includes('优先选一张'), '尊重自定义加强阈值');
+  ok(due({ msgsSinceSticker: 0 }) === '', '成功发表情后计数归零不催发');
 }
 
 console.log('## MCP 工具描述存在性');

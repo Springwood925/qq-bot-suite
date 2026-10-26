@@ -1,0 +1,17 @@
+**/node_modules/
+bridge/state/
+bridge/local-memory-runtime/
+bridge/models/
+bridge/config.json
+bridge/codex-media.json
+bridge/snowluma-path.txt
+bridge/_发送/
+bridge/assets/
+bridge/tools/
+bridge/wechatauto_logs/
+**/.env*
+**/*.log
+**/*.bak*
+**/*.sqlite*
+**/*.db*
+**/*.zip

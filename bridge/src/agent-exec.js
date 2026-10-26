@@ -26,31 +26,141 @@ const MAX_ARG_PATH = 4096;
 
 // 破坏性命令特征。命中即要求二次确认。
 // 注意：宁可误报（多问一句），不可漏报。
+// 2026-10-22 改：
+//   ① 每条带人话 label —— 给用户看的是「结束进程」而不是正则源码
+//   ② format 收窄成 format-volume —— 原 \bformat\b 会误伤 Format-Table / -Format / ImageFormat
 const DANGEROUS_COMMAND_PATTERNS = [
+  // scope: 'file'   = 跟目录有关，工作区内的可免确认
+  // scope: 'system' = 跟目录无关（杀进程/改注册表/格式化），永远要确认
   // 删除类（含常见别名）
-  /\b(rm|ri|del|erase|rmdir|rd|remove-item)\b/i,
+  { re: /\b(rm|ri|del|erase|rmdir|rd|remove-item)\b/i, label: '删除文件或目录', scope: 'file' },
   // 格式化 / 分区
-  /\b(format|diskpart|mkfs)\b/i,
+  { re: /\b(format-volume|diskpart|mkfs)\b/i, label: '格式化磁盘或分区', scope: 'system' },
   // 移动 / 改名（可能覆盖）
-  /\b(move-item|mv|move|ren|rename-item)\b/i,
+  { re: /\b(move-item|mv|move|ren|rename-item)\b/i, label: '移动或改名（可能覆盖）', scope: 'file' },
   // 停服 / 杀进程
-  /\b(stop-process|kill|taskkill|stop-service|sc\s+stop|schtasks\s+\/delete)\b/i,
+  { re: /\b(stop-process|kill|taskkill|stop-service|sc\s+stop|schtasks\s+\/delete)\b/i, label: '结束进程或停服务', scope: 'system' },
   // 破坏性 git
-  /\bgit\s+(reset\s+--hard|clean\s+-[a-z]*f|checkout\s+--|push\s+--force|branch\s+-D|filter-branch)\b/i,
+  { re: /\bgit\s+(reset\s+--hard|clean\s+-[a-z]*f|checkout\s+--|push\s+--force|branch\s+-D|filter-branch)\b/i, label: '破坏性 git 操作', scope: 'file' },
   // 覆盖写（重定向到已存在文件 / 常用写文件命令）
-  /\bset-content\b/i,
-  /\bout-file\b/i,
-  /\btruncate\b/i,
+  { re: /\bset-content\b/i, label: '覆盖写入文件', scope: 'file' },
+  { re: /\bout-file\b/i, label: '覆盖写入文件', scope: 'file' },
+  { re: /\btruncate\b/i, label: '清空文件', scope: 'file' },
   // 注册表写
-  /\b(reg\s+add|reg\s+delete|remove-itemproperty|new-itemproperty)\b/i,
+  { re: /\b(reg\s+add|reg\s+delete|remove-itemproperty|new-itemproperty)\b/i, label: '修改注册表', scope: 'system' },
   // 权限 / 所有权
-  /\b(icacls|takeown|chmod|chown)\b/i
+  { re: /\b(icacls|takeown|chmod|chown)\b/i, label: '修改权限或所有权', scope: 'system' }
 ];
 
+/** 返回命中的人话标签（未命中返回 null） */
 function isDangerousCommand(command) {
   const text = String(command ?? '');
-  const hit = DANGEROUS_COMMAND_PATTERNS.find((re) => re.test(text));
-  return hit ? hit.source : null;
+  for (const p of DANGEROUS_COMMAND_PATTERNS) {
+    if (p.re.test(text)) return { label: p.label, scope: p.scope };
+  }
+  return null;
+}
+
+/** 只挑出命中的那一行（给确认消息做预览，别把整段脚本甩给用户） */
+function dangerousSnippet(command) {
+  const text = String(command ?? '');
+  const lines = text.split('\n').map((s) => s.trim()).filter(Boolean);
+  for (const line of lines) {
+    for (const p of DANGEROUS_COMMAND_PATTERNS) {
+      if (p.re.test(line)) {
+        return line.length > 120 ? `${line.slice(0, 120)}…` : line;
+      }
+    }
+  }
+  const one = text.replace(/\s+/g, ' ').trim();
+  return one.length > 120 ? `${one.slice(0, 120)}…` : one;
+}
+
+/** 从命令里挑出「要动的那个东西」——给确认消息说人话用 */
+function describeTarget(command) {
+  const text = String(command ?? '');
+  // git 特殊处理：目标 = 子命令 + 参数（否则会只提出 "reset"）
+  const git = text.match(/^git\s+([^\n]+)/i);
+  if (git) {
+    const rest = git[1].replace(/\s+/g, ' ').trim();
+    return rest.length > 60 ? rest.slice(0, 60) + '…' : rest;
+  }
+  const m = text.match(/-(?:Path|LiteralPath|Destination|Id|Name)\s+["']?([^"'\s;|&)]+)/i);
+  if (m) return m[1];
+  const firstLine = text.split('\n')[0].trim();
+  const m2 = firstLine.match(/^[\w.-]+\s+["']?([^"'\s;|&)]+)/);
+  if (m2 && !m2[1].startsWith('-')) return m2[1];
+  return firstLine.length > 60 ? firstLine.slice(0, 60) + '…' : firstLine;
+}
+
+/** 命令摘要：单行短命令给原文；多行脚本只给行数 + 首句 */
+function summarizeCommand(command) {
+  const text = String(command ?? '').trim();
+  const lines = text.split('\n').filter((s) => s.trim());
+  const squeeze = (s) => s.replace(/\s+/g, ' ').trim();
+  if (lines.length <= 1) {
+    const one = squeeze(lines[0] || '');
+    return one.length > 100 ? one.slice(0, 100) + '…' : one;
+  }
+  const first = squeeze(lines[0]);
+  return `（脚本共 ${lines.length} 行）${first.length > 60 ? first.slice(0, 60) + '…' : first}`;
+}
+
+// ── 工作区（2026-10-22 用户拍板：工作区内的「文件类」操作免确认，系统级永远确认）──
+const SAFE_WORKSPACE_NAME = '_agent-workspace';
+
+function safeWorkspaceOf(rootDir) {
+  return path.join(String(rootDir || process.cwd()), SAFE_WORKSPACE_NAME);
+}
+
+function isInsidePath(child, root) {
+  try {
+    const a = path.resolve(String(child || '')).toLowerCase();
+    const b = path.resolve(String(root || '')).toLowerCase();
+    return a === b || a.startsWith(b + path.sep);
+  } catch {
+    return false;
+  }
+}
+
+/** 命令里是否引用了工作区外的盘符路径（防止 cwd 在内、命令删到外面） */
+function hasOutsidePath(command, workspace) {
+  const matches = String(command ?? '').match(/[A-Za-z]:\\[^\s"'`;|&)]+/g) || [];
+  return matches.some((p) => !isInsidePath(p, workspace));
+}
+
+// ── 工具调用预算（2026-10-22 加，治「单回合跑飞」）──────────────────────────
+// 起因：2026-10-22 17:12-17:25，一个回合里 qq_agent_pwsh 被调 45 次、记忆写入 21 次、
+//       总共 119 次调用、跑了 13 分钟，还在反复发登录码又改口说「误报」。
+// 历史分布（1511 个回合）：P95 = 24 次、P99 = 43 次；机器人正常长对话最高 74 次，
+//   但那是 qq_wait_for_messages + qq_send_message 交替（真在聊天），不是跑飞。
+// ⇒ 所以只对「干活类」工具限次，聊天类（wait/send/mark_read 等不经过这里）不受影响。
+const OP_BUDGETS = { pwsh: 30, write: 20 };
+const TOTAL_BUDGET = 100;
+const BUDGET_IDLE_RESET_MS = 60_000; // 空闲 60 秒视为新回合
+
+const toolBudgets = new Map(); // key -> { total, perOp, lastAt }
+
+/** 超限返回错误文字，未超返回 null */
+function checkToolBudget(key, op) {
+  const now = Date.now();
+  let b = toolBudgets.get(key);
+  if (!b || now - b.lastAt > BUDGET_IDLE_RESET_MS) {
+    b = { total: 0, perOp: {}, lastAt: now };
+    toolBudgets.set(key, b);
+  }
+  b.total += 1;
+  b.perOp[op] = (b.perOp[op] || 0) + 1;
+  b.lastAt = now;
+
+  const limit = OP_BUDGETS[op];
+  if (limit && b.perOp[op] > limit) {
+    return `已中止：本回合 ${op} 已调用 ${b.perOp[op]} 次（上限 ${limit}）。你可能在重复同样的操作 —— 换个思路，或者停下来问用户。`;
+  }
+  if (b.total > TOTAL_BUDGET) {
+    return `已中止：本回合工具调用已达 ${b.total} 次（上限 ${TOTAL_BUDGET}）。停下来问用户下一步怎么做。`;
+  }
+  return null;
 }
 
 // ── 输出工具 ────────────────────────────────────────────────────────────────
@@ -76,7 +186,20 @@ function needConfirm({ action, detail, preview }) {
     needsConfirm: true,
     action,
     detail,
-    preview: clip(preview ?? '', 1500, 500)
+    preview: clip(preview ?? '', 1500, 500),
+    // 2026-10-23：不再由桥发死模板 —— 让模型用自己的口气问（用户要求「走一遍人格提示词」）。
+    // 这个字段是给模型看的引导，不会被直接发给用户。
+    askUser: [
+      `需要用户点头的操作：${action}`,
+      `${detail}`,
+      '',
+      '⚠️ 桥不会替你发任何消息，也**没有**「确认请求已推送」这回事——',
+      '必须你自己调用 qq_send_message 发一条问句给用户。',
+      '这条问句里要说清：要做什么、目标是什么、在哪个目录。',
+      '⚠️ 目录必须写完整路径（例如 C:\\path\\to\\project），不要只说「当前目录」「工作目录」——用户看不出你在哪儿动。',
+      '用你平时说话的口气，别列清单别用表格。',
+      '用户回「干/确认/ok/行/嗯」这类就再调一次同样的工具。'
+    ].join('\n')
   };
 }
 
@@ -323,11 +446,18 @@ export function createAgentExec({ log, rootDir, ownerKey, isApproved, sendText }
 
     const danger = isDangerousCommand(cmd);
     if (danger && !isApproved()) {
-      return needConfirm({
-        action: '执行破坏性命令',
-        detail: `命中危险特征「${danger}」\n工作目录：${workDir}`,
-        preview: cmd
-      });
+      // 工作区内的文件类操作免确认；系统级操作永远确认
+      const ws = safeWorkspaceOf(cwdRoot);
+      const canSkip = danger.scope === 'file' && isInsidePath(workDir, ws) && !hasOutsidePath(cmd, ws);
+      if (canSkip) {
+        log(`[agent-exec] 工作区内免确认：${danger.label} @ ${workDir}`);
+      } else {
+        return needConfirm({
+          action: danger.label,
+          detail: `目标：${describeTarget(cmd)}\n位置：${workDir}`,
+          preview: summarizeCommand(cmd)
+        });
+      }
     }
 
     const shell = await resolveShell();
@@ -392,22 +522,23 @@ export function createAgentExec({ log, rootDir, ownerKey, isApproved, sendText }
     } catch (e) {
       return fail(e.message);
     }
-    const handler = HANDLERS[String(op ?? '').trim()];
+    // 单回合预算检查（只有 read/write/edit/glob/grep/pwsh/ls 会经过这里，
+    // 聊天类工具走的是 MCP server 另一条路，不受影响）
+    const opName = String(op ?? '').trim();
+    const budgetErr = checkToolBudget(key, opName);
+    if (budgetErr) {
+      log(`[agent-exec] 预算拦截 ${opName} (${key})`);
+      return fail(budgetErr);
+    }
+    const handler = HANDLERS[opName];
     if (!handler) return fail(`未知操作 "${op}"（支持：${Object.keys(HANDLERS).join(' / ')}）`);
     try {
       const result = await handler(args || {});
-      // 需要确认时顺手问管理员一句，模型不必自己记得发
-      if (result && result.needsConfirm && typeof sendText === 'function') {
-        const text = [
-          `⚠️ 我要${result.action}`,
-          result.detail,
-          '',
-          '预览：',
-          result.preview,
-          '',
-          '回复「干」我就执行'
-        ].join('\n');
-        sendText(key, text).catch((e) => log(`[agent-exec] 确认消息发送失败：${e?.message ?? e}`));
+      // 2026-10-23：不再由这里直接发模板。needConfirm 里带了 askUser，
+      // 模型会看到工具结果，用它自己的口吻问用户（走人格提示词）。
+      // 兜底：如果模型没开口（极端情况），5 分钟后确认窗口自然失效，不会挂住。
+      if (result && result.needsConfirm) {
+        log(`[agent-exec] 需要确认（交给模型开口）：${result.action} @ ${key}`);
       }
       return result;
     } catch (e) {

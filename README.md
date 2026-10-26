@@ -26,7 +26,7 @@
 1. DSH → **插件** → **添加插件**
 2. 输入本仓库地址：
    ```
-   https://github.com/<你的用户名>/qq-bot-suite
+   https://github.com/Springwood925/qq-bot-suite
    ```
 3. 点「安装」→ **完全退出 DSH**（托盘也要退）→ 重新打开
 
@@ -195,3 +195,11 @@ qq-bot-suite/
 ## License
 
 MIT（仅限本仓库作者的改动部分；上游代码按原样提供，未重新授权）。
+
+
+
+## 0.3.0：记忆、情绪与图片能力
+
+新增带来源和版本管理的会话记忆树、插件内记忆管理，以及可选的本地中文语义召回；持久情绪和目标按会话独立保存。可选 Codex 订阅辅助读图、生图；生成图改用文件 URI 投递。详见 [更新记录](CHANGELOG.md)、[记忆管理](bridge/docs/memory-tree-phase23.md)、[模型与图片能力安装](bridge/docs/local-memory-setup.md)和[数据库维护](bridge/docs/memory-maintenance.md)。
+
+依赖、模型和原生运行库不再随仓库分发。安装脚本会按锁文件安装桥接依赖；手动安装可在 bridge 目录运行 npm ci。推荐 Node 24。本地语义模型需另运行 npm run setup:memory；未安装时使用关键词检索。配置、登录凭据、聊天记录、记忆数据库和个人备份只保存在各自机器上。

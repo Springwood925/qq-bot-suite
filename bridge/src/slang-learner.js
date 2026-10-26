@@ -137,10 +137,10 @@ export function buildSlangContext(entries, max = 8) {
     .filter((e) => e.status === SLANG_STATUS.CONFIRMED && e.content && e.meaning);
   if (!pool.length) return '';
   // 2026-10-06 改：不再是"永远按 count 取前 N"，改成「重要条目固定进 + 其余名额每轮随机轮换」。
-  // 起因：机器人说话越来越模板（薯条群 5 天 884 条、>30 字的只占 1%），其中一个原因是它
+  // 起因：固定注入同一批黑话容易导致表达模板化，其中一个原因是它
   // 每轮看到的黑话永远是同一批（固定取 count 前 8）⇒ 反复用那几个词。
-  // 同一招在"表情候选清单"上已验证有效（纯表情占比 4.4% → 16.3%）。
-  // ⚠️ 必须保留"重要条目必进"：像「疾旋鼬」那条（count 已提到 12）是行为边界，不能被随机挤掉。
+  // 表情候选清单采用相同的轮换方式，避免总是使用相同候选。
+  // ⚠️ 必须保留"重要条目必进"：高频且已确认的行为边界不能被随机挤掉。
   const IMPORTANT_COUNT = 10;
   const sorted = [...pool].sort((a, b) => (Number(b.count) || 0) - (Number(a.count) || 0));
   const pinned = sorted.filter((e) => (Number(e.count) || 0) >= IMPORTANT_COUNT).slice(0, limit);
