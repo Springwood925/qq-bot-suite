@@ -30,6 +30,7 @@ import { createAgentExec } from './agent-exec.js';
 import { createCodexMedia, attachVisionEvidence } from './codex-media.js';
 import { storeGeneratedImage } from './generated-image-file.js';
 import { createMemoryTree } from './memory-tree.js';
+import { selectWakeContext } from './wake-context.js';
 import { createLocalEmbeddings } from './memory-embeddings.js';
 import { MEMORY_PATHS, handleMemoryRoute } from './memory-routes.js';
 import { isGifBuffer, gifToTiledPng } from './media/gif-frames.js';
@@ -8690,6 +8691,7 @@ async function main() {
     st.memoryScope = key;
     memoryTree.migrate(key, st);
     memoryTree.syncGoals(key, st.innerLife?.goals || []);
+    memoryTree.baselineStyleReview(key,st.recentMessages);
     // 迁移成功后 SQLite 是唯一记忆源；旧数组不再作为隐藏副本保留或重新注入。
     st.activeTopics = [];
     st.pendingThoughts = [];
@@ -10146,11 +10148,7 @@ async function main() {
         : rawText.slice(0, 300);
       return `[${t}] ${id}${who}${num}：${shown}${flags.length ? ' ' + flags.join('') : ''}`;
     };
-    const unread = Array.isArray(st.unread) ? st.unread.slice(-unreadLimit) : [];
-    const unreadSeqs = new Set(unread.map((m) => m.seq));
-    const recent = (Array.isArray(st.recentMessages) ? st.recentMessages : [])
-      .filter((m) => !unreadSeqs.has(m.seq))
-      .slice(-recentReadLimit);
+    const { unread, recent } = selectWakeContext(st,{recentReadLimit,unreadLimit});
     // 2026-09-21 加：unread 里可能混着"上一轮已经回过"的消息（水位之前那一批）。
     // 原来一律写成"以下是你还没看过的最新消息"，实测后果（18:51 那次）：
     // 清单里的 [18:43:51] 那条模型其实已经回过，但它信了这句话，又答了一遍。
@@ -10226,7 +10224,16 @@ async function main() {
     // 本地 CPU 召回，不调用模型 API；最多等待800毫秒，未就绪时仍可用关键词继续。
     await Promise.race([memoryTree.prepare(key,st.recentMessages).catch(error=>log('记忆召回保留关键词：'+error.message)),new Promise(resolve=>setTimeout(resolve,800))]);
     if(socialV2.paused || !isSessionAllowedInCurrentMode(key)) return;
-    const promptText = buildInlineContextV2(key) + buildWakePromptV2(key, reason);
+    let styleReviewOffer=null;
+    try {
+      if(innerLifeEnabledV2(st)&&v2ToolEnabled('memory')){
+        const configured=Number(cfg.socialV2?.wake?.inlineContextLimit);
+        const visible=selectWakeContext(st,{recentReadLimit:Number.isFinite(configured)?configured:25,unreadLimit:Number(cfg.socialV2?.context?.unreadLimit)||30});
+        styleReviewOffer=memoryTree.offerStyleReview(key,[...visible.recent,...visible.unread]);
+      }
+    } catch(error){log('表达回顾暂缓：'+error.message);}
+    const promptText = buildInlineContextV2(key) + buildWakePromptV2(key, reason) + (styleReviewOffer?.prompt||'');
+    const cancelStyleReview=()=>{if(styleReviewOffer)try{memoryTree.cancelStyleReview(key,styleReviewOffer.id);}catch(error){log('表达回顾取消状态待核对：'+error.message);}};
     // 抓一份真实注入快照（控制台 / 插件面板用；内存态，不落盘）
     rememberLastPrompt(key, reason, promptText);
     log(`[reserved2] 唤醒 ${key}（${reason}）`);
@@ -10252,6 +10259,7 @@ async function main() {
         disarmPendingWakeLease(key);
         rollbackWakeTime();
         restoreFiniteSleep();
+        cancelStyleReview();
         log(`[reserved2] 唤醒投递被拒 ${key}: ${result.error || '未知错误'}`);
       } else if (result && result.queued === true) {
         // 入队而非真正在途：保留 pendingWakeKeys，等 DSH 恢复后真正投递的 turn/end 再触发收尾保护；
@@ -10268,6 +10276,7 @@ async function main() {
         saveSocialV2State();
         setupSleepTimerV2(key);
       }
+      cancelStyleReview();
       log(`[reserved2] 唤醒投递失败 ${key}: ${error?.message ?? error}`);
     }
   }

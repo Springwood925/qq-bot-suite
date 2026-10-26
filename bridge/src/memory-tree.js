@@ -4,6 +4,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { createMemoryDatabase } from './memory-database.js';
 import { createMemoryExtensions } from './memory-tree-extensions.js';
+import { createStyleReview } from './style-review.js';
 
 const KINDS = new Set(['fact', 'event', 'agreement', 'thought','experience','observation','goal','style','knowledge']);
 const EVIDENCE = new Set(['statement', 'reported', 'inference', 'joke', 'legacy', 'admin']);
@@ -43,7 +44,14 @@ export function createMemoryTree({ file, now = Date.now, sanitize = v => String(
     CREATE TABLE IF NOT EXISTS tombstones (scope TEXT NOT NULL,fingerprint TEXT NOT NULL,created_at INTEGER NOT NULL,PRIMARY KEY(scope,fingerprint));
     CREATE TABLE IF NOT EXISTS handoffs (scope TEXT PRIMARY KEY,from_session TEXT NOT NULL,record_ids TEXT NOT NULL,goals TEXT NOT NULL,created_at INTEGER NOT NULL);
     CREATE VIRTUAL TABLE IF NOT EXISTS memory_search USING fts5(node_id UNINDEXED,scope UNINDEXED,content);`);
-  function transaction(fn) { db.exec('BEGIN IMMEDIATE'); try { const result = fn(); db.exec('COMMIT'); return result; } catch (e) { db.exec('ROLLBACK'); throw e; } }
+  let transactionDepth=0,savepointId=0;
+  function transaction(fn) {
+    const nested=transactionDepth>0,name='memory_'+(++savepointId);
+    db.exec(nested?'SAVEPOINT '+name:'BEGIN IMMEDIATE');transactionDepth++;
+    try {const result=fn();db.exec(nested?'RELEASE '+name:'COMMIT');return result;}
+    catch(error){if(nested){db.exec('ROLLBACK TO '+name);db.exec('RELEASE '+name);}else db.exec('ROLLBACK');throw error;}
+    finally {transactionDepth--;}
+  }
   const text = (v, n) => clean(sanitize(clean(v, n)), n);
   function observe(scope, messages) {
     scope = scopeKey(scope);
@@ -181,6 +189,7 @@ export function createMemoryTree({ file, now = Date.now, sanitize = v => String(
         if (item.source_id) db.prepare("UPDATE sources SET excerpt='',sender_name='' WHERE id=?").run(item.source_id);
       }
       extended.onForgotten(versions.map(item=>item.id),scope);
+      styleReview.invalidate(scope);
       db.prepare('DELETE FROM handoffs WHERE scope=?').run(scope);
     });
     if(forgottenGoals.size)onForgetGoals(scope,[...forgottenGoals]);
@@ -190,7 +199,7 @@ export function createMemoryTree({ file, now = Date.now, sanitize = v => String(
     scope = scopeKey(scope);
     const rows = db.prepare("SELECT id,kind FROM nodes WHERE scope=? AND status!='forgotten'").all(scope);
     for (const row of rows) if (!kind || row.kind === kind) { if (node(row.id,scope).status !== 'forgotten') forget(scope,row.id); }
-    if (!kind) db.prepare('DELETE FROM people WHERE scope=?').run(scope);
+    if (!kind) { db.prepare('DELETE FROM people WHERE scope=?').run(scope); styleReview.clear(scope); }
     return { cleared: true };
   }
   function migrate(scope, state) {
@@ -256,6 +265,7 @@ export function createMemoryTree({ file, now = Date.now, sanitize = v => String(
       case 'store':return store(scope,request,context);
       case 'recall':return embeddings&&request.q?extended.search(scope,request):{records:recall(scope,request)};
       case 'link':return extended.link(scope,request,context);
+      case 'review':return styleReview.submit(scope,request,context);
       case 'forget':{const s=sourceFor(scope,request,context);const item=node(request.id,scope);if(s.senderId!==item.subject_id&&!context.isOwner?.(s.senderId))fail('只能遗忘本人或管理员要求处理的记忆',403);return forget(scope,request.id);}
       default:fail('记忆操作只支持 store / recall / forget / link');
     }
@@ -303,8 +313,15 @@ export function createMemoryTree({ file, now = Date.now, sanitize = v => String(
   }
   let closed=false;
   const extended = createMemoryExtensions({db,now,text,scopeKey,node,publicNode,transaction,sourceFor,insertSource,recall,forget,adminRevise,embeddings,log,words});
+  const styleReview=createStyleReview({db,now,scopeKey,settings:extended.settings,store,sourceFor,transaction});
+  async function admin(scope,request={}) {
+    if(request.action==='styleReviews')return {review:styleReview.status(scope)};
+    const result=await extended.admin(scope,request);
+    return request.kind==='style'&&['list','search'].includes(request.action)?{...result,review:styleReview.status(scope)}:result;
+  }
   return {observe,resolvePerson,store,recall,forget,clear,migrate,legacyAppend,handoff,format,execute,adminRevise,legacySelect,projection,
-    search:extended.search,prepare:extended.prepare,admin:extended.admin,reindex:extended.reindex,
+    search:extended.search,prepare:extended.prepare,admin,reindex:extended.reindex,
+    baselineStyleReview:styleReview.baseline,offerStyleReview:styleReview.offer,cancelStyleReview:styleReview.cancel,
     recordObservation:extended.observation,recordExperience:extended.experience,syncGoals:extended.syncGoals,
     categoryKind: category=>CATEGORY[category], stats:()=>({nodes:db.prepare("SELECT count(*) AS n FROM nodes WHERE status!='forgotten'").get().n,people:db.prepare('SELECT count(*) AS n FROM people').get().n}),
     close:()=>{if(!closed){extended.close();db.close();closed=true;}}};
