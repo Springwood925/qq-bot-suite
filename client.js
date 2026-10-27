@@ -12,7 +12,7 @@ window.__ModuleLoader__.load({
     const React = require('react');
     const h = React.createElement;
     const { useState, useEffect, useMemo, useCallback } = React;
-    const UI_VERSION = '0.3.3';
+    const UI_VERSION = '0.3.4';
 
     // ── 小工具 ────────────────────────────────────────────────────────────
     const apiGet = (path) =>
@@ -267,6 +267,10 @@ window.__ModuleLoader__.load({
       const [busy, setBusy] = useState(false);
       const [msg, setMsg] = useState('');
       const [slang, setSlang] = useState(null);
+      const [slangSelected, setSlangSelected] = useState([]);
+      const [slangPage, setSlangPage] = useState(0);
+      const [slangScope, setSlangScope] = useState('');
+      const [slangPolicy, setSlangPolicy] = useState('natural');
       const [wl, setWl] = useState(null);
       const [levels, setLevels] = useState({});   // key -> 拖动中的本地档位
       const [saving, setSaving] = useState('');
@@ -456,7 +460,7 @@ window.__ModuleLoader__.load({
       };
 
       const slangResearch = () => {
-        const cand = (slang && slang.candidates) || [];
+        const cand = ((slang && slang.entries) || []).filter(e => e.status === 'candidate');
         const ids = cand.slice(0, 8).map((e) => e.id);
         if (!ids.length) { flash('没有候选词'); return; }
         setSaving('slang');
@@ -464,6 +468,26 @@ window.__ModuleLoader__.load({
           .then(() => { flash('研究任务已提交'); loadSide(); loadPanel(); })
           .catch((e) => flash('研究失败：' + e.message))
           .finally(() => setSaving(''));
+      };
+
+      const slangReview = (decision) => {
+        if (!slangSelected.length) { flash('请先选择候选词'); return; }
+        setSaving('slang');
+        apiPost('/api/slang/batch-' + decision, {ids:slangSelected,policy:slangPolicy})
+          .then(d=>{ flash(decision === 'confirm' ? '已确认 ' + (d.confirmedCount || 0) + ' 条，跳过 ' + (d.skippedCount || 0) + ' 条' : '已拒绝 ' + (d.rejectedCount || 0) + ' 条'); setSlangSelected([]); loadSide(); })
+          .catch(e=>flash('审核失败：' + e.message)).finally(()=>setSaving(''));
+      };
+      const assignSlangScope = () => {
+        if (!slangSelected.length || !slangScope.trim()) { flash('请选择词条并填写目标范围'); return; }
+        setSaving('slang'); apiPost('/api/slang/batch-confirm',{operation:'scope',ids:slangSelected,scope:slangScope.trim()})
+          .then(d=>{flash('已归类 '+(d.updatedCount||0)+' 条');setSlangSelected([]);loadSide();})
+          .catch(e=>flash('归类失败：'+e.message)).finally(()=>setSaving(''));
+      };
+      const setSlangUse = () => {
+        if (!slangSelected.length) return;
+        setSaving('slang');apiPost('/api/slang/batch-confirm',{operation:'policy',ids:slangSelected,policy:slangPolicy})
+          .then(d=>{flash('已更新 '+(d.updatedCount||0)+' 条使用权限');setSlangSelected([]);loadSide();})
+          .catch(e=>flash('设置失败：'+e.message)).finally(()=>setSaving(''));
       };
 
       const wxToggle = () => {
@@ -476,6 +500,9 @@ window.__ModuleLoader__.load({
       };
 
       const usageRows = (us && Array.isArray(us.sessions) ? us.sessions : []).filter((s) => s.turns > 0);
+      const slangSorted = ((slang && slang.entries) || []).slice().sort((a,b)=>Number(b.status==='candidate')-Number(a.status==='candidate') || String(b.updatedAt||'').localeCompare(String(a.updatedAt||'')));
+      const slangPageCount = Math.max(1,Math.ceil(slangSorted.length/50));
+      const slangCurrent = slangSorted.slice(Math.min(slangPage,slangPageCount-1)*50,Math.min(slangPage,slangPageCount-1)*50+50);
 
       return h('div', { style: S.wrap },
         // ══ 头部 ══
@@ -742,12 +769,25 @@ window.__ModuleLoader__.load({
           ),
           slang
             ? h('div', { style: S.row },
-                h('span', { style: S.pill }, '已确认 ' + ((slang.confirmed || []).length)),
-                h('span', { style: S.pill }, '候选 ' + ((slang.candidates || []).length)),
-                h('span', { style: S.pill }, '已拒 ' + ((slang.rejected || []).length)),
-                h('span', { style: Object.assign({}, S.tiny, S.dim) }, '研究只写解释；入库点「确认」在完整控制台里'),
+                h('span', { style: S.pill }, '已确认 ' + ((slang.entries || []).filter(e=>e.status==='confirmed').length)),
+                h('span', { style: S.pill }, '候选 ' + ((slang.entries || []).filter(e=>e.status==='candidate').length)),
+                h('span', { style: S.pill }, '已拒 ' + ((slang.entries || []).filter(e=>e.status==='rejected').length)),
+                h('span', { style: Object.assign({}, S.tiny, S.dim) }, '待审核联网解释只供理解；确认后才可主动使用。来源由模型提供，需人工核实。'),
               )
             : h('div', { style: S.dim }, '黑话读取中…'),
+          slang ? h('div', null,
+            h('div',{style:S.row},
+              h('button',{style:S.btnSm,disabled:saving==='slang',onClick:()=>setSlangSelected(slangCurrent.filter(e=>e.status==='candidate').map(e=>e.id))},'全选本页候选'),
+              h('button',{style:S.btnSm,disabled:saving==='slang'||!slangSelected.length,onClick:()=>slangReview('confirm')},'批量确认可使用'),
+              h('button',{style:S.btnSm,disabled:saving==='slang'||!slangSelected.length,onClick:()=>slangReview('reject')},'批量拒绝')),
+            h('div',{style:S.row},h('input',{value:slangScope,onChange:e=>setSlangScope(e.target.value),placeholder:'group:群号 或 internet',style:S.input}),h('button',{style:S.btnSm,disabled:saving==='slang'||!slangSelected.length,onClick:assignSlangScope},'归类选中词条')),
+            h('div',{style:S.row},h('select',{'aria-label':'热梗使用权限',value:slangPolicy,onChange:e=>setSlangPolicy(e.target.value)},h('option',{value:'understand'},'只理解'),h('option',{value:'self'},'仅描述自己时使用'),h('option',{value:'natural'},'合适语境可主动使用')),h('button',{style:S.btnSm,disabled:saving==='slang'||!slangSelected.length,onClick:setSlangUse},'设置使用权限')),
+            h('div',{style:S.row},h('button',{style:S.btnSm,disabled:slangPage<=0,onClick:()=>{setSlangSelected([]);setSlangPage(p=>p-1);}},'上一页'),h('span',{style:S.tiny},'第 '+(Math.min(slangPage,slangPageCount-1)+1)+' / '+slangPageCount+' 页'),h('button',{style:S.btnSm,disabled:slangPage>=slangPageCount-1,onClick:()=>{setSlangSelected([]);setSlangPage(p=>p+1);}},'下一页')),
+            slangCurrent.map(e=>h('div',{key:e.id,style:{padding:'8px 0',borderTop:'1px solid rgba(128,128,128,.2)'}},
+              h('label',null,h('input',{type:'checkbox',checked:slangSelected.includes(e.id),onChange:()=>setSlangSelected(v=>v.includes(e.id)?v.filter(id=>id!==e.id):v.concat(e.id))}), ' ', h('strong',null,e.content),' · ', e.scope==='internet'?'公开网络':e.scope==='legacy_global'||!e.scope?'旧词待归类':shortKey(e.scope)),
+              h('div',{style:S.tiny}, (e.status==='confirmed'?'已确认':e.status==='rejected'?'已拒绝':'待审核')+' · '+({understand:'只理解',self:'仅描述自己时使用',natural:'可主动使用'}[e.status==='confirmed'?(e.usagePolicy||'natural'):'understand'])+' · '+(e.meaning || '尚无解释')),
+              (e.sources||[]).length?h('div',{style:S.tiny},'来源线索（未核实）：'+e.sources.join('，')):null))
+          ):null,
         ),
 
         // ══ 微信 ══

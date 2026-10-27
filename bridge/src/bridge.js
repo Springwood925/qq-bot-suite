@@ -39,6 +39,7 @@ import { searchHistory, findMessagesDb } from './history-search.js';
 import { extractForwardIds, forwardIdFromData, sanitizeForwardId, formatForwardResponse, renderForwardSummary, renderForwardReplacements } from './forward.js';
 import { cardToText } from './card.js';
 import { createEndfieldCtx, handleTempSessionMessage, handleGroupQuery, queryForSession } from './endfield-bind.js';
+import { isStandaloneSticker } from './media-attention.js';
 import {
   loadSlang,
   saveSlang,
@@ -1088,6 +1089,16 @@ async function main() {
 
   // ── 群聊黑话/网络用语学习（slang） ──────────────────────────────────────
   let slangEntries = loadSlang(SLANG_FILE);
+  const slangAutoFile = path.join(STATE_DIR, 'slang-auto.json');
+  let slangAuto = readJsonSafe(slangAutoFile, { day: '', count: 0, trendAt: 0 });
+  function reserveSlangAuto() {
+    const day = new Date().toISOString().slice(0, 10);
+    if (slangAuto.day !== day) slangAuto = { ...slangAuto, day, count: 0 };
+    if ((Number(slangAuto.count) || 0) >= 8) return false;
+    slangAuto.count = (Number(slangAuto.count) || 0) + 1;
+    atomicWriteJson(slangAutoFile, slangAuto);
+    return true;
+  }
   const slangWindows = new Map();       // key -> [{sender,text,time}]：待学习消息窗口
   const slangExtractionCooldowns = new Map(); // key -> timestamp
   const slangSubmitTimes = new Map();   // key -> [timestamp]：AI 提交黑话候选限频（内存态）
@@ -1920,10 +1931,11 @@ async function main() {
         seenContents.add(item.content);
         const idx = Number(item.source_id) - 1;
         const src = Number.isInteger(idx) && idx >= 0 && idx < messages.length ? messages[idx] : null;
+        if (!src || !String(src.text || '').includes(item.content)) continue;
         const evidence = src ? [{ key, sender: src.sender, text: src.text, time: src.time }] : [];
-        const result = upsertSlangEntry(slangEntries, item.content, { evidence, countIncrement: 1 });
+        const result = upsertSlangEntry(slangEntries, item.content, { scope: key, evidence, countIncrement: 1 });
         if (result.created) added += 1; else updated += 1;
-        if (result.entry && result.entry.status === SLANG_STATUS.CANDIDATE && thresholds.includes(result.entry.count) && result.entry.count > result.entry.lastInferenceCount) {
+        if (result.entry && result.entry.status === SLANG_STATUS.CANDIDATE && (result.created || thresholds.includes(result.entry.count)) && result.entry.count > result.entry.lastInferenceCount) {
           researchCandidates.push(result.entry);
         }
       }
@@ -1932,7 +1944,7 @@ async function main() {
       saveSlangStore();
       log(`黑话提取：${key} 新增 ${added} 条，更新 ${updated} 条`);
       if (researchCandidates.length && cfg.slang?.autoResearch !== false) {
-        queueSlangTask(() => runSlangResearch(researchCandidates));
+        queueSlangTask(() => runSlangResearch(researchCandidates, true));
       }
     } catch (error) {
       if (/会话|session|not found|404/i.test(String(error?.message ?? error))) {
@@ -1942,12 +1954,13 @@ async function main() {
     }
   }
 
-  async function runSlangResearch(candidates) {
+  async function runSlangResearch(candidates, automatic = false) {
     if (!candidates || !candidates.length) return;
     if (cfg.slang?.enabled === false) return;
     if (!dshReady) return;
     // 过滤掉已经在研究队列里的候选，避免同一批被重复排队研究。
-    const targets = candidates.filter((e) => e && !slangResearchingIds.has(e.id));
+    const targets = candidates.filter((e) => e && !slangResearchingIds.has(e.id) && /^[\p{L}\p{N} _-]{2,24}$/u.test(e.content) && !/\d{5}/.test(e.content)).slice(0, 5);
+    if (automatic && targets.length && !reserveSlangAuto()) return;
     if (!targets.length) return;
     for (const e of targets) slangResearchingIds.add(e.id);
     let sessionId;
@@ -1968,11 +1981,11 @@ async function main() {
       const output = await waitLearnerTurn(sessionId);
       const results = parseResearchJson(output);
       for (const r of results) {
-        const entry = slangEntries.find((e) => e.content === r.content);
+        const entry = targets.find((e) => e.content === r.content);
         if (!entry) continue;
         // 只有明确确认（confirmed: true）的结果才写入解释字段；
         // 不确定/未确认的结果保留原状，允许后续再次研究。
-        if (r.confirmed !== true) {
+        if (r.confirmed !== true || !r.sources.some(s => /^https?:\/\//i.test(s))) {
           log(`黑话研究：${r.content} 未确认，保留候选待后续研究`);
           continue;
         }
@@ -1981,6 +1994,7 @@ async function main() {
         if (r.example) entry.example = r.example;
         if (r.risk) entry.risk = r.risk;
         if (Array.isArray(r.sources) && r.sources.length) entry.sources = r.sources.map((s) => String(s ?? '').trim()).filter(Boolean).slice(0, 10);
+        entry.sourceQuality = 'reported'; // 模型提供的链接，仅作线索，不代表服务端验证。
         entry.lastInferenceCount = entry.count;
         entry.updatedAt = new Date().toISOString();
       }
@@ -1995,6 +2009,27 @@ async function main() {
       for (const e of targets) slangResearchingIds.delete(e.id);
     }
   }
+
+  async function discoverInternetSlang() {
+    if (cfg.slang?.enabled === false || cfg.slang?.autoResearch === false || !dshReady) return;
+    if (Date.now() - (Number(slangAuto.trendAt) || 0) < 24 * 60 * 60 * 1000 || !reserveSlangAuto()) return;
+    slangAuto.trendAt = Date.now(); atomicWriteJson(slangAutoFile, slangAuto);
+    try {
+      const sessionId = await ensureSlangLearnerSession();
+      const prompt = '只使用 web_search 和 web_fetch 搜索近期公开中文网络流行梗。仅选择有公开来源、一般聊天可用的至多3个短词，不搜索任何聊天内容或个人信息，不执行本地操作。每个结果输出 JSON 数组元素 {content,meaning,usage,example,risk,sources:[来源URL],confirmed:true}；来源不足则不输出。仅返回 JSON。';
+      const accepted = await api.sessions.prompt({sessionId, mode:'queue', content:[{type:'text',text:prompt}]});
+      if (!accepted.result.ok) return;
+      const results = parseResearchJson(await waitLearnerTurn(sessionId)).slice(0,3);
+      for (const item of results) {
+        if (!item.confirmed || !item.meaning || !item.sources.some(s=>/^https?:\/\//i.test(s)) || !/^[\p{L}\p{N} _-]{2,24}$/u.test(item.content) || /\d{5}/.test(item.content)) continue;
+        if (slangEntries.some(e=>e.scope==='internet' && e.content===item.content)) continue;
+        const entry=createSlangEntry({content:item.content,meaning:item.meaning,usage:item.usage,example:item.example,risk:item.risk,sources:item.sources,scope:'internet'});
+        entry.sourceQuality='reported'; slangEntries.push(entry);
+      }
+      saveSlangStore();
+    } catch (error) { log('网络热梗自动发现失败:', error?.message ?? error); }
+  }
+  setInterval(() => { if (dshReady) queueSlangTask(discoverInternetSlang); }, 15 * 60 * 1000).unref();
 
   function maybeQueueSlangExtraction(key) {
     if (cfg.slang?.enabled === false) return;
@@ -2047,29 +2082,32 @@ async function main() {
       example: e?.example ?? '',
       risk: e?.risk ?? '',
       status: e?.status ?? SLANG_STATUS.CANDIDATE,
+      scope: e?.scope || 'legacy_global',
+      sourceQuality: e?.sourceQuality || 'unknown',
+      allowedUse: e?.status === SLANG_STATUS.CONFIRMED ? (e.usagePolicy || 'natural') : 'understand',
       source: e?.source ?? 'ai',
       count: Number(e?.count) || 0,
-      evidence: Array.isArray(e?.evidence) ? e.evidence.slice(-5) : [],
+      sources: Array.isArray(e?.sources) ? e.sources : [],
       updatedAt: e?.updatedAt ?? ''
     };
   }
 
   // 已确认黑话的公开列表（按出现次数排序，最多 injectMax 条）。
-  function confirmedSlangListV2() {
+  function confirmedSlangListV2(scope) {
     const max = Math.max(1, Math.min(30, Number(cfg.slang?.injectMax) || 8));
     return slangEntries
-      .filter((e) => e.status === SLANG_STATUS.CONFIRMED && e.content && e.meaning)
+      .filter((e) => ['legacy_global','internet',scope].includes(e.scope || 'legacy_global') && e.status !== SLANG_STATUS.REJECTED && (e.status === SLANG_STATUS.CONFIRMED || e.sourceQuality === 'reported') && e.content && e.meaning)
       .sort((a, b) => (Number(b.count) || 0) - (Number(a.count) || 0))
       .slice(0, max)
       .map(publicSlangEntry);
   }
 
-  function withSlangContext(promptText) {
+  function withSlangContext(promptText, scope) {
     const now = new Date();
     const timeLine = `【当前时间】${now.toLocaleString('zh-CN', { hour12: false })}（${Intl.DateTimeFormat().resolvedOptions().timeZone}）`;
     const parts = [timeLine];
     if (cfg.slang?.enabled !== false) {
-      const block = buildSlangContext(slangEntries, cfg.slang?.injectMax ?? 8);
+      const block = buildSlangContext(slangEntries, cfg.slang?.injectMax ?? 8, {scope, query:promptText});
       if (block) parts.push(block);
     }
     return parts.join('\n\n') + '\n\n' + promptText;
@@ -3056,6 +3094,22 @@ async function main() {
         }
         if (req.method === 'POST' && url.pathname === '/api/slang/batch-confirm') {
           const body = await readBody();
+          if (body.operation === 'scope' || body.operation === 'policy') {
+            const chosen=Array.isArray(body.ids)?[...new Set(body.ids.map(String))]:[];
+            const items=chosen.map(id=>slangEntries.find(e=>e.id===id));
+            if (!chosen.length || chosen.length>100 || items.some(e=>!e)) {sendJson({ok:false,error:'请选择1至100个有效词条'},400);return;}
+            if (body.operation === 'scope') {
+              const scope=String(body.scope||'');
+              if(!/^(?:legacy_global|internet|group:[1-9]\d{4,19}|private:[1-9]\d{4,19})$/.test(scope)){sendJson({ok:false,error:'范围格式无效'},400);return;}
+              if(new Set(items.map(e=>e.content)).size!==items.length||items.some(e=>slangEntries.some(o=>o.id!==e.id&&o.content===e.content&&(o.scope||'legacy_global')===scope))){sendJson({ok:false,error:'目标范围已有同名词条'},409);return;}
+              for(const e of items)e.scope=scope;
+            } else {
+              const policy=String(body.policy||'');
+              if(!['understand','self','natural'].includes(policy)||items.some(e=>policy!=='understand'&&e.status!==SLANG_STATUS.CONFIRMED)){sendJson({ok:false,error:'主动使用权限仅可授予已确认词条'},400);return;}
+              for(const e of items)e.usagePolicy=policy;
+            }
+            for(const e of items)e.updatedAt=new Date().toISOString();saveSlangStore();sendJson({ok:true,updatedCount:items.length});return;
+          }
           const ids = Array.isArray(body.ids) ? body.ids.map(String).filter(Boolean) : [];
           if (!ids.length) { sendJson({ ok: false, error: '请选择要确认的黑话' }, 400); return; }
           let confirmedCount = 0;
@@ -3068,6 +3122,7 @@ async function main() {
             if (entry.status !== SLANG_STATUS.CANDIDATE) { skippedCount++; skipped.push({ id, content: entry.content, reason: '不是候选' }); continue; }
             if (!entry.meaning || !String(entry.meaning).trim()) { skippedCount++; skipped.push({ id, content: entry.content, reason: '缺少含义' }); continue; }
             entry.status = SLANG_STATUS.CONFIRMED;
+            entry.usagePolicy = ['understand','self','natural'].includes(body.policy) ? body.policy : 'natural';
             entry.updatedAt = new Date().toISOString();
             confirmedCount++;
           }
@@ -3137,6 +3192,7 @@ async function main() {
             return;
           }
           entry.status = SLANG_STATUS.CONFIRMED;
+          entry.usagePolicy = ['understand','self','natural'].includes(body.policy) ? body.policy : 'natural';
           entry.updatedAt = new Date().toISOString();
           saveSlangStore();
           log(`控制台：确认黑话「${entry.content}」`);
@@ -4029,8 +4085,8 @@ async function main() {
             participation: formatParticipationV2(st),
             slang: {
               enabled: cfg.slang?.enabled !== false,
-              entries: confirmedSlangListV2(),
-              block: buildSlangContext(slangEntries, cfg.slang?.injectMax ?? 8)
+              entries: confirmedSlangListV2(key),
+              block: buildSlangContext(slangEntries, cfg.slang?.injectMax ?? 8, {scope:key})
             },
             stickers: {
               enabled: cfg.socialV2?.sticker?.enabled !== false,
@@ -4760,6 +4816,10 @@ async function main() {
           try {
             const sentMessages = await sendMessagesV2(key, messages, delays, actualReplyToMessageId, atUserId);
             recordSentMessagesV2(key, sentMessages);
+            const sharedSource = actualReplyToMessageId && st.recentMessages.find(m=>!m.isSelf && String(m.messageId||'')===String(actualReplyToMessageId));
+            if(sharedSource && /(?:我们一起|咱们一起|陪我一起|谢谢你帮我|感谢你帮我|一起庆祝|共同回忆)/.test(String(sharedSource.plain||sharedSource.text||'')) && sentMessages[0]?.messageId) {
+              rememberMedia('recordExperience',key,{tool:'qq_shared_reply',callId:'reply:'+sentMessages[0].messageId,metadata:{messageRef:String(sentMessages[0].messageId),replyToMessageId:String(actualReplyToMessageId)}});
+            }
             st.lastAiReplyAt = now;
             st.lastActionAt = now;
             st.wakeConfig.noActionCount = 0;
@@ -5031,6 +5091,7 @@ async function main() {
               replyToMessageId: actualReplyToMessageId,
               atUserId
             });
+            if(sent.messageId && actualReplyToMessageId) rememberMedia('recordExperience',key,{tool:'qq_shared_sticker',callId:'sticker:'+sent.messageId,metadata:{messageRef:String(sent.messageId),replyToMessageId:String(actualReplyToMessageId)}});
             // 记录到二代会话的 recentMessages，让 AI 知道自己发过这个表情
             const label = sent.entry?.desc || sent.entry?.localNote || '表情包';
             const text = `[表情包:${label}]`;
@@ -6201,7 +6262,7 @@ async function main() {
           if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
           if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
           if (req.headers['x-agent-token'] && !v2ToolEnabled('slangQuery')) { sendJson({ ok: false, error: '工具未启用：qq_slang_query' }, 403); return; }
-          const list = confirmedSlangListV2().filter((e) => {
+          const list = confirmedSlangListV2(key).filter((e) => {
             if (!q) return true;
             return e.content.toLowerCase().includes(q)
               || e.meaning.toLowerCase().includes(q)
@@ -6213,7 +6274,7 @@ async function main() {
             key,
             total: list.length,
             entries: list,
-            block: buildSlangContext(slangEntries, cfg.slang?.injectMax ?? 8)
+            block: buildSlangContext(slangEntries, cfg.slang?.injectMax ?? 8, {scope:key})
           });
           return;
         }
@@ -6231,7 +6292,7 @@ async function main() {
           if (!content) { sendJson({ ok: false, error: 'content 不能为空' }, 400); return; }
           if (content.length > 50) { sendJson({ ok: false, error: '黑话词条过长（最多 50 字）' }, 400); return; }
           if (!allowSlangSubmit(key)) { sendJson({ ok: false, error: '黑话提交过于频繁，请稍后再试' }, 429); return; }
-          const existing = slangEntries.find((e) => e.content === content);
+          const existing = slangEntries.find((e) => e.content === content && (e.scope || 'legacy_global') === key);
           if (existing) {
             if (existing.status === SLANG_STATUS.CONFIRMED) {
               sendJson({ ok: true, duplicate: true, status: 'confirmed', entry: publicSlangEntry(existing) });
@@ -6251,7 +6312,7 @@ async function main() {
             if (cfg.slang?.autoResearch !== false) {
               const thresholds = Array.isArray(cfg.slang?.inferenceThresholds) ? cfg.slang.inferenceThresholds.map(Number).filter(Boolean) : [2, 4, 8];
               if (thresholds.includes(existing.count) && existing.count > (Number(existing.lastInferenceCount) || 0)) {
-                queueSlangTask(() => runSlangResearch([existing]));
+                queueSlangTask(() => runSlangResearch([existing], true));
               }
             }
             log(`[reserved2] AI 再次提交黑话候选「${content}」(${key})，累计 ${existing.count} 次`);
@@ -6260,6 +6321,7 @@ async function main() {
           }
           const entry = createSlangEntry({
             content,
+            scope: key,
             source: 'ai',
             status: SLANG_STATUS.CANDIDATE,
             evidence: context ? [{ key, sender: 'AI提交', text: context.slice(0, 200), time: Date.now() }] : []
@@ -6267,7 +6329,7 @@ async function main() {
           slangEntries.push(entry);
           saveSlangStore();
           if (cfg.slang?.autoResearch !== false) {
-            queueSlangTask(() => runSlangResearch([entry]));
+            queueSlangTask(() => runSlangResearch([entry], true));
           }
           log(`[reserved2] AI 提交黑话候选「${content}」(${key})`);
           appendActivity(`${key} [reserved2] AI 提交黑话候选：${content}${context ? '（附语境）' : ''}`);
@@ -8944,10 +9006,10 @@ async function main() {
       }
       throw error;
     }
-    let content = [{ type: 'text', text: withSlangContext(promptText) }];
+    let content = [{ type: 'text', text: withSlangContext(promptText, key) }];
     if (Array.isArray(opts.media) && opts.media.length > 0) {
       const imageParts = await resolveMediaList(opts.media);
-      content = [{ type: 'text', text: withSlangContext(promptText) }, ...imageParts];
+      content = [{ type: 'text', text: withSlangContext(promptText, key) }, ...imageParts];
     }
     // 媒体解析成功后再标记退场，避免解析异常时残留退场标记。
     if (opts.farewell) social.exitingSessions.add(sessionId);
@@ -9845,7 +9907,6 @@ async function main() {
   function evaluateWakeTriggerV2(key, st, event, kind, textContent, plainContent, quoteTargetIsSelf) {
     if (kind === 'private') return 'private';
     const tr = st.wakeConfig?.triggers ?? {};
-    if (tr.anyMessage) return 'anyMessage';
     if (tr.atMention) {
       const atSelf = Array.isArray(event?.message) && event.message.some((seg) => seg?.type === 'at' && String(seg.data?.qq) === String(event?.self_id ?? ''));
       if (atSelf || quoteTargetIsSelf) return 'atMention';
@@ -9854,6 +9915,9 @@ async function main() {
       const lower = String(textContent ?? '').toLowerCase();
       if (lower.includes('@' + selfNickname.toLowerCase()) || lower.includes(selfNickname.toLowerCase())) return 'nameMention';
     }
+    // 单独的表情常只是语气，不凭它的存在自动搭话；被点名或引用自身仍走上面的直接唤醒。
+    if (isStandaloneSticker(event?.message)) return null;
+    if (tr.anyMessage) return 'anyMessage';
     if (Array.isArray(tr.keywords) && tr.keywords.length) {
       const lower = String(plainContent ?? '').toLowerCase();
       for (const kw of tr.keywords) {
@@ -10170,7 +10234,7 @@ async function main() {
       parts.push(`【你已经处理过的】下面这些消息在上一轮就已经交给你了、而且你已经回过（或已决定不回），它们只是还挂在未读里：\n${doneUnread.map(fmt).join('\n')}\n⚠️ 不要为了它们再回答一遍。如果你判断上一轮确实漏了某一条、现在该补，就只补那一条，别把整批重答。`);
     }
     if (!parts.length) return customBlock + r18Block;
-    return `${customBlock}${r18Block}${parts.join('\n\n')}\n（上面的消息已经给你了，不需要再为"看消息"调用 qq_get_unread_messages / qq_get_recent_messages / qq_social_state；要引用某条请用它的 #消息id。这段清单是 ${snapshotAt} 的快照，如果它排队了一阵子才交给你，先用 qq_get_unread_messages 复核有没有更新的消息，别把已经答过的当成新的。）\n\n`;
+    return `${customBlock}${r18Block}${parts.join('\n\n')}\n（上面的消息已经给你了，不需要再为"看消息"调用 qq_get_unread_messages / qq_get_recent_messages / qq_social_state；要引用某条请用它的 #消息id。这段清单是 ${snapshotAt} 的快照，如果它排队了一阵子才交给你，先用 qq_get_unread_messages 复核有没有更新的消息，别把已经答过的当成新的。）\n群聊里的表情包常只是语气或顺手一发，不必逐张查看、解读或回应；结合前后文决定是否参与。有人明确问图、点名或需要看图时正常查看和回应；无法区分的普通图片不要擅自判成表情。\n\n`;
   }
 
   async function sendWakePromptV2(key, reason) {
@@ -10227,7 +10291,7 @@ async function main() {
     if(socialV2.paused || !isSessionAllowedInCurrentMode(key)) return;
     let styleReviewOffer=null;
     try {
-      if(innerLifeEnabledV2(st)&&v2ToolEnabled('memory')){
+      if(v2ToolEnabled('memory')){
         const configured=Number(cfg.socialV2?.wake?.inlineContextLimit);
         const visible=selectWakeContext(st,{recentReadLimit:Number.isFinite(configured)?configured:25,unreadLimit:Number(cfg.socialV2?.context?.unreadLimit)||30});
         styleReviewOffer=memoryTree.offerStyleReview(key,[...visible.recent,...visible.unread]);
@@ -11038,10 +11102,10 @@ async function main() {
       }
       throw error;
     }
-    let content = [{ type: 'text', text: withSlangContext(promptText) }];
+    let content = [{ type: 'text', text: withSlangContext(promptText, key) }];
     if (Array.isArray(mediaList) && mediaList.length > 0) {
       const imageParts = await resolveMediaList(mediaList);
-      content = [{ type: 'text', text: withSlangContext(promptText) }, ...imageParts];
+      content = [{ type: 'text', text: withSlangContext(promptText, key) }, ...imageParts];
     }
     const accepted = await api.sessions.prompt({
       sessionId,

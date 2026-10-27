@@ -168,6 +168,15 @@ export function createMemoryExtensions({db,now,text,scopeKey,node,publicNode,tra
   }
   function experience(scope,{tool,callId,result,ok=true,summary,metadata:m={}}){
     if(!settings().experienceMemory||!ok)return {skipped:true};
+    if(tool==='qq_shared_sticker'||tool==='qq_shared_reply'){
+      const sent=String(m.messageRef||''),reply=String(m.replyToMessageId||'');
+      if(!/^-?\d+$/.test(sent)||!/^\-?\d+$/.test(reply)||sent==='0'||reply==='0')return {skipped:true};
+      const dayStart=now()-86400000;
+      const count=db.prepare("SELECT count(*) AS n FROM nodes WHERE scope=? AND kind='experience' AND fact_key LIKE 'shared:%' AND created_at>?").get(scopeKey(scope),dayStart).n;
+      if(count>=3)return {skipped:true};
+      const sticker=tool==='qq_shared_sticker';
+      return insertTrusted(scope,{kind:'experience',key:'shared:'+sent,sourceRef:'qq:shared:'+sent,evidence:'tool',status:'unverified',content:sticker?'在本会话中，机器人引用一条消息并成功发送了表情；具体互动含义需核实。':'在本会话中，机器人回应了对方提出的共同活动或感谢；具体经历需核实。',metadata:{tool:sticker?'qq_send_sticker':'qq_send_message',messageRef:sent,replyToMessageId:reply,verified:false,interpretation:'仅有发送回执，不推断对方感受或活动是否完成'}});
+    }
     if(!/(?:web_search|web_fetch|qq_draw_image|qq_endfield_query|qq_get_forward_msg)$/.test(String(tool)))return {skipped:true};
     const raw=result===undefined?String(summary||''):typeof result==='string'?result:JSON.stringify(result??{});
     if(/"(?:ok|success)"\s*:\s*false|"status"\s*:\s*"(?:failed|error)"/.test(raw))return {skipped:true};

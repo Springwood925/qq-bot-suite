@@ -10,12 +10,18 @@ export function explicitAttitude(value) {
   const negative=/(?:讨厌你|恨你|你[，,\s]*(?:你)?(?:真是|就是|是|这个|个)?[，,\s]*(?:废物|傻逼|蠢货)|^(?:滚开|滚蛋|闭嘴|废物|傻逼|蠢货)[！!。\s]*$|你[，,\s]*(?:滚开|滚蛋|闭嘴)|垃圾你|(?:对|向)你.{0,4}(?:辱骂|恶意攻击|态度恶劣))/.test(text);
   return positive===negative?0:positive?1:-1;
 }
+export function explicitApology(value) {
+  const text=String(value||'').replace(/小鲸鱼|机器人/g,'你').trim();
+  if (/[“”「」『』"?？]|(?:不是|没有|不想|不必|不用|别说|他说|她说|有人说|开玩笑|才怪|并非)/.test(text)) return false;
+  return /^(?:你[，,\s]*)?(?:对不起|抱歉|我错了|是我错了|刚才我错了|刚才是我不好|我不该(?:骂你|那样对你))[！!。,.，\s]*$/.test(text);
+}
 export function createAffinity({db,now,scopeKey,ownerQQ=()=>'',botNames=()=>['小鲸鱼'],transaction}) {
   db.exec(`CREATE TABLE IF NOT EXISTS affinity_interactions (
     scope TEXT NOT NULL,origin TEXT NOT NULL,user_id TEXT NOT NULL,occurred_at INTEGER NOT NULL,
     slot INTEGER NOT NULL,attitude INTEGER NOT NULL,PRIMARY KEY(scope,origin));
     CREATE INDEX IF NOT EXISTS affinity_person ON affinity_interactions(scope,user_id,occurred_at);
-    CREATE TABLE IF NOT EXISTS affinity_baselines(scope TEXT PRIMARY KEY,created_at INTEGER NOT NULL);`);
+    CREATE TABLE IF NOT EXISTS affinity_baselines(scope TEXT PRIMARY KEY,created_at INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS affinity_repairs(scope TEXT NOT NULL,origin TEXT NOT NULL,user_id TEXT NOT NULL,occurred_at INTEGER NOT NULL,slot INTEGER NOT NULL,PRIMARY KEY(scope,origin));`);
   const owner=()=>String(typeof ownerQQ==='function'?ownerQQ():ownerQQ||'');
   const attitudeOf=value=>explicitAttitude(botNames().filter(Boolean).reduce((result,name)=>result.split(name).join('你'),String(value||'')));
   function directed(scope,m) {
@@ -34,8 +40,12 @@ export function createAffinity({db,now,scopeKey,ownerQQ=()=>'',botNames=()=>['�
         const hash=digest(scope+'\0'+origin);
         if(db.prepare('SELECT 1 FROM tombstones WHERE scope=? AND fingerprint=?').get(scope,'source:'+hash))continue;
         db.prepare('INSERT INTO affinity_interactions VALUES (?,?,?,?,?,?) ON CONFLICT(scope,origin) DO UPDATE SET attitude=excluded.attitude WHERE affinity_interactions.attitude!=excluded.attitude').run(scope,hash,id,at,Math.floor(at/300000),attitudeOf(m.plain||m.text));
+        const repairText=botNames().filter(Boolean).reduce((result,name)=>result.split(name).join('你'),String(m.plain||m.text||''));
+        if(explicitApology(repairText))db.prepare('INSERT OR IGNORE INTO affinity_repairs VALUES (?,?,?,?,?)').run(scope,hash,id,at,Math.floor(at/300000));
+        else db.prepare('DELETE FROM affinity_repairs WHERE scope=? AND origin=?').run(scope,hash);
       }
       db.prepare('DELETE FROM affinity_interactions WHERE scope=? AND occurred_at<?').run(scope,now()-30*DAY);
+      db.prepare('DELETE FROM affinity_repairs WHERE scope=? AND occurred_at<?').run(scope,now()-30*DAY);
     });
   }
   function baseline(scope,messages) {
@@ -76,9 +86,14 @@ export function createAffinity({db,now,scopeKey,ownerQQ=()=>'',botNames=()=>['�
       const weight=Math.exp(-(now()-at)/(90*DAY));if(attitude>0)positive+=weight;else negative+=weight;
     }
     const frequencyBonus=Math.min(20,Math.round(4*Math.log2(1+slots.size)+Math.min(6,perDay.size)));
-    const attitudeBonus=Math.round(25*positive/(positive+negative+4)-40*negative/(positive+negative+4));
+    const repairs=db.prepare('SELECT * FROM affinity_repairs WHERE scope=? AND user_id=? AND occurred_at>? ORDER BY occurred_at').all(scope,userId,now()-30*DAY);
+    const lastNegative=events.filter(e=>e.attitude<0).at(-1);
+    const apology=lastNegative&&repairs.find(r=>r.occurred_at>lastNegative.occurred_at);
+    const followup=apology&&events.find(e=>e.attitude>0&&e.occurred_at>apology.occurred_at&&e.slot!==apology.slot);
+    const repairBonus=followup?Math.min(6,Math.max(0,Math.round(negative*2))):0;
+    const attitudeBonus=Math.round(25*positive/(positive+negative+4)-40*negative/(positive+negative+4))+repairBonus;
     const score=Math.max(0,Math.min(95,50+frequencyBonus+attitudeBonus));
-    return {userId,isAdmin:false,fixed:false,score,level:score>=85?'亲近':score>=70?'熟悉友好':score>=55?'渐渐熟悉':score>=40?'普通':score>=20?'谨慎':'疏远',frequencyBonus,attitudeBonus,interactions:slots.size,activeDays:perDay.size,positive:Math.round(positive*10)/10,negative:Math.round(negative*10)/10,memoryEvidence};
+    return {userId,isAdmin:false,fixed:false,score,level:score>=85?'亲近':score>=70?'熟悉友好':score>=55?'渐渐熟悉':score>=40?'普通':score>=20?'谨慎':'疏远',frequencyBonus,attitudeBonus,repairBonus,interactions:slots.size,activeDays:perDay.size,positive:Math.round(positive*10)/10,negative:Math.round(negative*10)/10,memoryEvidence};
   }
   function list(scope) {
     scope=scopeKey(scope);
@@ -95,6 +110,6 @@ export function createAffinity({db,now,scopeKey,ownerQQ=()=>'',botNames=()=>['�
     lines.push('按人格自然体现亲疏，不主动报分；无法判断态度时保持中性，不把普通争论当恶意。');
     return lines.join('\n');
   }
-  function forgetSources(scope,ids){for(const id of ids)db.prepare('DELETE FROM affinity_interactions WHERE scope=? AND origin=?').run(scope,id);}
-  return {observe,baseline,calculate,list,format,forgetSources,clear:scope=>transaction(()=>{db.prepare('DELETE FROM affinity_interactions WHERE scope=?').run(scope);db.prepare('INSERT OR REPLACE INTO affinity_baselines VALUES (?,?)').run(scope,now());db.prepare('INSERT OR REPLACE INTO meta VALUES (?,?)').run('affinity-clear:'+scope,String(now()));})};
+  function forgetSources(scope,ids){for(const id of ids){db.prepare('DELETE FROM affinity_interactions WHERE scope=? AND origin=?').run(scope,id);db.prepare('DELETE FROM affinity_repairs WHERE scope=? AND origin=?').run(scope,id);}}
+  return {observe,baseline,calculate,list,format,forgetSources,clear:scope=>transaction(()=>{db.prepare('DELETE FROM affinity_interactions WHERE scope=?').run(scope);db.prepare('DELETE FROM affinity_repairs WHERE scope=?').run(scope);db.prepare('INSERT OR REPLACE INTO affinity_baselines VALUES (?,?)').run(scope,now());db.prepare('INSERT OR REPLACE INTO meta VALUES (?,?)').run('affinity-clear:'+scope,String(now()));})};
 }
