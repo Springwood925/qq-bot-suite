@@ -221,6 +221,18 @@ export function createMemoryExtensions({db,now,text,scopeKey,node,publicNode,tra
   async function admin(scope,request){
     const action=request.action||'overview';if(action==='overview')return overview();if(action==='settings')return {settings:setSettings(request.settings||{})};
     scope=scopeKey(scope);
+    if(action==='batchReview'){
+      if(!['confirm','reject'].includes(request.decision))fail('批量审核只支持确认或拒绝');
+      if(!Array.isArray(request.ids)||!request.ids.length||request.ids.length>100||request.ids.some(id=>typeof id!=='string')||new Set(request.ids).size!==request.ids.length)fail('请选择1至100条不重复的待核实记录');
+      const records=request.ids.map(id=>node(id,scope));
+      for(const row of records){if(row.status!=='unverified'||row.kind==='goal')fail('选中记录已变化或不是可审核的待核实记录，请刷新后重选',409);}
+      // 先审来源，再审依赖摘要，避免同一批次中的来源换版使摘要失效。
+      const ordered=[],visiting=new Set(),visited=new Set(),selected=new Set(request.ids);
+      function visit(row){if(visited.has(row.id))return;if(visiting.has(row.id))fail('依赖关系成环，请分别核实');visiting.add(row.id);for(const link of relations(row))if(link.type==='supports'&&selected.has(link.id))visit(records.find(item=>item.id===link.id));visiting.delete(row.id);visited.add(row.id);ordered.push(row);}
+      records.forEach(visit);
+      const result=transaction(()=>ordered.map(row=>edit(scope,row.id,{content:row.content,confirmed:request.decision==='confirm',status:request.decision==='reject'?'archived':'active',reason:text(request.reason||('批量'+(request.decision==='confirm'?'核实':'拒绝')),200)}).record));
+      return {reviewed:result.length,decision:request.decision,records:result};
+    }
     if(['revise','confirm','archive','done'].includes(action)&&node(request.id,scope).kind==='goal')fail('目标请通过专用目标操作同步真实状态，避免产生两个版本的待办');
     if(action==='list')return list(scope,request);
     if(action==='read')return read(scope,request.id);

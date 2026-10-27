@@ -1,6 +1,6 @@
 {
   "name": "qq-bot-suite",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "private": true,
   "type": "module",
   "description": "DSH 插件：QQ 机器人套件 —— 启动 DSH 就自动拉起机器人，含可交互控制面板与首次配置向导",
@@ -13,7 +13,9 @@
     "lib/index.js",
     "client.js",
     "cordis.patch.yml",
-    "bridge"
+    "bridge",
+    "scripts/verify-package.mjs",
+    "scripts/check-installed-ui.ps1"
   ],
   "keywords": [
     "dsh",
@@ -34,6 +36,7 @@
     }
   },
   "scripts": {
-    "postinstall": "npm --prefix bridge ci --omit=dev"
+    "postinstall": "npm --prefix bridge ci --omit=dev",
+    "verify:package": "node scripts/verify-package.mjs"
   }
 }

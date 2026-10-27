@@ -1044,7 +1044,7 @@ async function main() {
   acquireLock();
   loadState();
   const memoryEmbeddings = createLocalEmbeddings({runtimeDir:path.join(ROOT,'local-memory-runtime'),modelDir:path.join(ROOT,'models','bge-small-zh-v1.5'),log});
-  const memoryTree = createMemoryTree({ file: path.join(STATE_DIR, 'memory-tree.sqlite'), sanitize: value => redactKnownTokensOnly(value), embeddings:memoryEmbeddings, log,
+  const memoryTree = createMemoryTree({ file: path.join(STATE_DIR, 'memory-tree.sqlite'), sanitize: value => redactKnownTokensOnly(value), embeddings:memoryEmbeddings, log, ownerQQ:()=>cfg.ownerQQ, botNames:()=>['小鲸鱼',selfNickname].filter(Boolean),
     onForgetGoals:(scope,ids)=>{const st=socialV2.conversations.get(scope);if(st?.innerLife?.goals){st.innerLife.goals=st.innerLife.goals.filter(goal=>!ids.includes(goal.id));saveSocialV2State();}} });
   function rememberMedia(method,...args){try{return memoryTree[method](...args);}catch(error){log('图片结果已完成，但记忆留存失败：'+error.message);return null;}}
 
@@ -9593,7 +9593,7 @@ async function main() {
   }
 
   // ── 二代仿真模式（reserved2）唤醒调度 ──────────────────────────────────
-  function appendSocialV2Message(key, sender, textContent, plainContent, quoteTargetIsSelf, isOwner, messageId, media = [], userId = null, forwardIds = []) {
+  function appendSocialV2Message(key, sender, textContent, plainContent, quoteTargetIsSelf, isOwner, messageId, media = [], userId = null, forwardIds = [], directToBot = false) {
     const st = getSocialV2State(key);
     const recentLimit = Number(cfg.socialV2?.context?.recentLimit) || 100;
     const unreadLimit = Number(cfg.socialV2?.context?.unreadLimit) || 30;
@@ -9620,6 +9620,7 @@ async function main() {
       }
     }
     const msg = {
+      directToBot: !!directToBot,
       seq: (st.lastUnreadSeq || 0) + 1,
       messageId: messageId != null ? String(messageId) : null,
       sender,
@@ -10889,7 +10890,8 @@ async function main() {
       const sender = kind === 'group' ? (event.sender?.card || event.sender?.nickname || String(event.user_id)) : '私聊';
       // 视频先看懂再入库：否则 AI 看到的只有「[视频]」两个字。
       const v2Text = await inlineVideoDescriptions(textContent, mediaList).catch(() => textContent);
-      appendSocialV2Message(key, sender, v2Text, plainContent, quoteTargetIsSelf, isOwner, event.message_id ?? event.msg_id ?? null, mediaList, event.user_id ?? null, extractForwardIds(event.message ?? []));
+      const directToBot=kind==='private'||quoteTargetIsSelf||isDirectAddress(plainContent,event,kind)||(Array.isArray(event.message)&&event.message.some(seg=>seg?.type==='at'&&String(seg.data?.qq)===String(event.self_id??'')));
+      appendSocialV2Message(key, sender, v2Text, plainContent, quoteTargetIsSelf, isOwner, event.message_id ?? event.msg_id ?? null, mediaList, event.user_id ?? null, extractForwardIds(event.message ?? []),directToBot);
       // 二代同样收集群聊黑话学习素材（AI 自主提交之外，桥接仍自动提取高频陌生词）
       if (kind === 'group') feedSlangWindow(key, sender, plainContent);
       if (socialV2.paused) {

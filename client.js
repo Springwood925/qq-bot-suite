@@ -12,6 +12,7 @@ window.__ModuleLoader__.load({
     const React = require('react');
     const h = React.createElement;
     const { useState, useEffect, useMemo, useCallback } = React;
+    const UI_VERSION = '0.3.2';
 
     // ── 小工具 ────────────────────────────────────────────────────────────
     const apiGet = (path) =>
@@ -121,6 +122,7 @@ window.__ModuleLoader__.load({
       const [busy,setBusy]=useState(false),[error,setError]=useState(''),[notice,setNotice]=useState('');
       const [page,setPage]=useState(0),[reload,setReload]=useState(0),[forgetConfirm,setForgetConfirm]=useState(false);
       const [target,setTarget]=useState(''),[relation,setRelation]=useState('related'),[diagnostic,setDiagnostic]=useState(null);
+      const [selected,setSelected]=useState([]),[batchConfirm,setBatchConfirm]=useState('');
       const requestSeq=React.useRef(0),detailSeq=React.useRef(0);
       const K={fact:'人物与偏好',event:'事件',agreement:'约定',thought:'临时想法',experience:'实际经历',observation:'图片观察',goal:'自己的目标',style:'表达习惯',knowledge:'知识与方法'};
       const ST={active:'有效',done:'已完成',archived:'已归档',unverified:'待核实',superseded:'已被更正',forgotten:'已遗忘'};
@@ -137,11 +139,12 @@ window.__ModuleLoader__.load({
         const seq=++requestSeq.current;if(!scope)return;
         setError('');setBusy(true);
         const selectedKind=tab==='style'?'style':tab==='self'?(kind||'experience'):kind;
-        call(searchQ?'search':'list',{q:searchQ,kind:selectedKind||undefined,status:status||undefined,person:person||undefined,includeUnverified:includePending,limit:20,offset:page*20})
+        call(tab==='affinity'?'affinity':searchQ?'search':'list',{q:searchQ,kind:selectedKind||undefined,status:status||undefined,person:person||undefined,includeUnverified:includePending,limit:20,offset:page*20})
           .then(value=>{if(seq===requestSeq.current)setResult(value);})
           .catch(e=>{if(seq===requestSeq.current)setError(e.message);})
           .finally(()=>{if(seq===requestSeq.current)setBusy(false);});
       },[scope,tab,kind,status,person,searchQ,includePending,page,reload]);
+      useEffect(()=>{setSelected([]);setBatchConfirm('');},[scope,tab,kind,status,person,searchQ,includePending,page,reload]);
       useEffect(()=>{setDetail(null);setForgetConfirm(false);detailSeq.current++;},[scope,tab,kind,status,person,searchQ,page]);
       const chooseScope=value=>{setScope(value);setQ('');setSearchQ('');setPage(0);setPerson('');setDiagnostic(null);setNotice('');};
       const open=async id=>{
@@ -158,6 +161,12 @@ window.__ModuleLoader__.load({
       const runDiagnostic=async(action,body={})=>{if(busy)return;setBusy(true);setError('');try{setDiagnostic(await call(action,body));await refreshOverview();}catch(e){setError(e.message);}finally{setBusy(false);}};
       const record=detail?.record;
       const records=result?.records||[];
+      const reviewable=records.filter(item=>item.status==='unverified'&&item.kind!=='goal');
+      const batchReview=async()=>{
+        if(busy||!selected.length||!batchConfirm)return;setBusy(true);setError('');setNotice('');
+        try{const value=await call('batchReview',{ids:selected,decision:batchConfirm});setNotice(`已批量${batchConfirm==='confirm'?'确认':'拒绝/归档'} ${value.reviewed} 条记忆`);setSelected([]);setBatchConfirm('');setDetail(null);setReload(n=>n+1);await refreshOverview();}
+        catch(e){setError(e.message);setSelected([]);setBatchConfirm('');setReload(n=>n+1);}finally{setBusy(false);}
+      };
       const immutable=record&&['superseded','forgotten'].includes(record.status);
       const systemGoal=record?.kind==='goal';
       const groups=Object.keys(K).map(type=>({type,items:records.filter(r=>r.kind===type)})).filter(g=>g.items.length);
@@ -171,9 +180,17 @@ window.__ModuleLoader__.load({
           select('会话',scope,chooseScope,[['','选择会话'],...scopes.map(key=>{const count=overview?.scopes.find(s=>s.scope===key);return [key,shortKey(key)+(count?` · ${count.records} 条`:'')];})]),
           h('label',{style:{...css.label,flex:1,minWidth:180}},'回忆线索',h('input',{'aria-label':'回忆线索',style:{...css.input,width:'100%'},placeholder:'如：玩一会儿就退回桌面',value:q,onChange:e=>setQ(e.target.value),onKeyDown:e=>{if(e.key==='Enter')runSearch();}})),
           actionButton('搜索',runSearch,!scope),searchQ?actionButton('清除搜索',()=>{setQ('');setSearchQ('');setPage(0);}):null),
-        h('div',{role:'tablist','aria-label':'记忆分类',style:S.row},[['tree','记忆树'],['self','自己的经历'],['style','表达习惯'],['diagnostics','检索诊断']].map(([value,label])=>h('button',{key:value,type:'button',role:'tab','aria-selected':tab===value,disabled:busy,style:{...S.btn,background:tab===value?'rgba(85,150,240,.16)':'transparent',borderColor:tab===value?'#6ca9ef':'rgba(128,128,128,.4)'},onClick:()=>{setTab(value);setKind('');setStatus('');setPerson('');setPage(0);setQ('');setSearchQ('');setDiagnostic(null);}},label))),
+        h('div',{role:'tablist','aria-label':'记忆分类',style:S.row},[['tree','记忆树'],['self','自己的经历'],['style','表达习惯'],['affinity','人物好感度'],['diagnostics','检索诊断']].map(([value,label])=>h('button',{key:value,type:'button',role:'tab','aria-selected':tab===value,disabled:busy,style:{...S.btn,background:tab===value?'rgba(85,150,240,.16)':'transparent',borderColor:tab===value?'#6ca9ef':'rgba(128,128,128,.4)'},onClick:()=>{setTab(value);setKind('');setStatus('');setPerson('');setPage(0);setQ('');setSearchQ('');setDiagnostic(null);}},label))),
         error?h('div',{role:'alert',style:S.err},error):null,notice?h('div',{role:'status',style:S.ok},notice):null,
-        tab==='diagnostics'?h('div',{style:css.group},
+        tab==='affinity'?h('section',{'aria-label':'人物好感度',style:css.group},
+          h('div',{style:css.small},'管理员固定 100 分，其他人 0–95 分。基础 50 分，按近30天与机器人的有效互动和明确态度计算；有效记忆可补充历史态度。普通群聊旁观不加分，同一5分钟和每日都有上限。'),
+          h('div',{style:css.small},'疑似玩笑、引用、否定和含糊表达按中性处理。评分只影响交流亲疏，管理权限始终按 QQ 身份判断。'),
+          (result?.people||[]).map(p=>h('div',{key:p.userId,style:{...S.card,padding:12}},
+            h('div',{style:S.row},h('strong',null,(p.aliases?.at(-1)||p.userId)+' · QQ '+p.userId),p.isAdmin?h('span',{style:S.pill},'管理员'):null,h('strong',{style:{marginLeft:'auto'}},p.score+' / 100')),
+            h('div',{style:css.small},p.level),
+            p.fixed?h('div',{style:css.small},'固定最高，不受互动频率和负面记忆影响。'):h('div',{style:css.small},`近30天有效互动 ${p.interactions} 次 / ${p.activeDays} 天 · 频率 +${p.frequencyBonus} · 态度 ${p.attitudeBonus>=0?'+':''}${p.attitudeBonus} · 正向 ${p.positive} / 负向 ${p.negative} · 历史记忆依据 ${p.memoryEvidence} 条`))),
+          !result?.people?.length?h('div',{style:S.dim},busy?'正在计算…':'当前会话尚无人物记录。'):null
+        ):tab==='diagnostics'?h('div',{style:css.group},
           h('div',{style:S.row},h('span',{style:S.pill},overview?.semantic?.state==='ready'?'语义模型就绪':'语义模型：'+(overview?.semantic?.state||'读取中')),h('span',{style:S.dim},`${overview?.semantic?.indexed||0} 条向量 · ${overview?.semantic?.indexing?'正在更新索引':'索引待命'}`)),
           h('div',{style:css.small},'中文嵌入在本机 CPU 运行。只搜索选定会话；模型不可用时保留关键词搜索，不切换收费 API。'),
           overview?.semantic?.error?h('div',{style:S.err},overview.semantic.error):null,
@@ -197,13 +214,16 @@ window.__ModuleLoader__.load({
             h('span',{style:css.small},busy?'读取中…':searchQ?`混合召回 ${records.length} 条`:`${result?.total||0} 条`)),
           h('div',{style:{display:'flex',flexWrap:'wrap',gap:12,alignItems:'flex-start'}},
             h('div',{style:{flex:'1 1 270px',minWidth:0,...css.group}},
+              h('section',{'aria-label':'批量审核',style:css.group},
+                h('div',{style:S.row},h('label',{style:S.label},h('input',{'aria-label':'全选当前页待核实',type:'checkbox',disabled:busy||!reviewable.length,checked:reviewable.length>0&&reviewable.every(item=>selected.includes(item.id)),onChange:e=>{setSelected(e.target.checked?reviewable.map(item=>item.id):[]);setBatchConfirm('');}}),'全选当前页待核实'),h('span',{style:css.small},`已选 ${selected.length} 条`),actionButton('只看待核实',()=>{setStatus('unverified');setPage(0);}),actionButton('批量确认',()=>setBatchConfirm('confirm'),!selected.length),actionButton('批量拒绝/归档',()=>setBatchConfirm('reject'),!selected.length)),
+                batchConfirm?h('div',{role:'alert',style:css.group},h('div',null,`将${batchConfirm==='confirm'?'核实并启用':'拒绝并归档'}选中的 ${selected.length} 条记录。请核对下方内容和来源。`),h('div',{style:S.row},actionButton(batchConfirm==='confirm'?'确认批量核实':'确认批量拒绝',batchReview,!selected.length),actionButton('取消批量操作',()=>setBatchConfirm('')))):null),
               !records.length?h('div',{style:{...S.dim,padding:'18px 4px'}},busy?'正在读取…':'当前筛选下没有记录。旧便签可勾选待核实后搜索。'):null,
               groups.map(group=>h('details',{key:group.type,open:true,style:{border:'1px solid rgba(128,128,128,.2)',borderRadius:8,padding:'6px 8px'}},
                 h('summary',{style:{cursor:'pointer',fontWeight:600,padding:'3px 0'}},K[group.type]+' · '+group.items.length),
-                group.items.map(item=>h('button',{type:'button',key:item.id,disabled:busy,'aria-label':'查看记忆 '+item.content,style:{...S.btn,display:'block',textAlign:'left',width:'100%',marginTop:6,padding:9,background:record?.id===item.id?'rgba(85,150,240,.12)':'transparent'},onClick:()=>open(item.id)},
+                group.items.map(item=>h('div',{key:item.id},item.status==='unverified'&&item.kind!=='goal'?h('label',{style:{...S.label,marginTop:6}},h('input',{'aria-label':'选择审核 '+item.content,type:'checkbox',disabled:busy,checked:selected.includes(item.id),onChange:e=>{setSelected(current=>e.target.checked?[...current,item.id]:current.filter(id=>id!==item.id));setBatchConfirm('');}}),'选择审核'):null,h('button',{type:'button',disabled:busy,'aria-label':'查看记忆 '+item.content,style:{...S.btn,display:'block',textAlign:'left',width:'100%',marginTop:6,padding:9,background:record?.id===item.id?'rgba(85,150,240,.12)':'transparent'},onClick:()=>open(item.id)},
                   h('div',{style:{display:'flex',gap:5,flexWrap:'wrap',marginBottom:4}},h('span',{style:{...S.pill,color:item.status==='unverified'?'#d9a441':undefined}},ST[item.status]||item.status),h('span',{style:css.small},EV[item.evidence]||item.evidence),item.subjectUserId?h('span',{style:css.small},item.subjectUserId==='self'?'小鲸鱼自己':item.subjectUserId):null),
                   h('div',{style:{whiteSpace:'pre-wrap',overflowWrap:'anywhere',lineHeight:1.6}},item.content),
-                  h('div',{style:{...css.small,marginTop:3}},date(item.occurredAt),item.retrieval?.semantic?` · 语义 ${item.retrieval.semantic.toFixed(2)}`:''))))),
+                  h('div',{style:{...css.small,marginTop:3}},date(item.occurredAt),item.retrieval?.semantic?` · 语义 ${item.retrieval.semantic.toFixed(2)}`:'')))))),
               !searchQ&&result?.total>20?h('div',{style:S.row},actionButton('上一页',()=>setPage(p=>Math.max(0,p-1)),page===0),h('span',{style:css.small},`第 ${page+1} 页`),actionButton('下一页',()=>setPage(p=>p+1),(page+1)*20>=result.total)):null),
             record?h('aside',{'aria-label':'记忆详情',style:{...S.card,flex:'1 1 340px',minWidth:0,maxWidth:'100%',background:'rgba(128,128,128,.035)'}},
               h('div',{style:S.head},h('strong',null,'记忆详情'),h('span',{style:S.pill},K[record.kind]),h('span',{style:S.pill},ST[record.status])),
@@ -241,6 +261,7 @@ window.__ModuleLoader__.load({
 
 
     function Panel() {
+      const memoryRef=React.useRef(null);
       const [panel, setPanel] = useState(null);
       const [err, setErr] = useState('');
       const [busy, setBusy] = useState(false);
@@ -461,11 +482,15 @@ window.__ModuleLoader__.load({
         h('div', { style: Object.assign({}, S.row, { justifyContent: 'space-between' }) },
           h('div', { style: S.row },
             h('span', { style: S.title }, 'QQ 机器人控制面板'),
+            h('span', { style: S.pill }, '界面 '+UI_VERSION),
+            panel?.packageVersion?h('span',{style:S.pill},'主机 '+panel.packageVersion):null,
             h('span', { style: Object.assign({}, S.pill, { border: 'none', opacity: 0.5 }) }, busy ? '刷新中…' : (panel ? '已连接' : '连接中…')),
             msg ? h('span', { style: S.ok }, msg) : null,
           ),
           h('button', { style: S.btn, onClick: () => { loadPanel(); loadSide(); }, disabled: busy }, '刷新'),
+          h('button',{type:'button',style:S.btn,onClick:()=>memoryRef.current?.scrollIntoView({behavior:'smooth',block:'start'})},'打开记忆树 / 好感度 / 批量审核'),
         ),
+        panel&&panel.packageVersion!==UI_VERSION?h('div',{role:'alert',style:S.err},'界面与主机版本不一致。请完整更新插件并完全退出 DSH（包括托盘）后重新打开；只替换 bridge 文件夹不会更新详情页。'):null,
         err ? h('div', { style: S.err }, '读取失败：' + err) : null,
         panel && panel.error ? h('div', { style: S.err }, panel.error) : null,
 
@@ -498,7 +523,7 @@ window.__ModuleLoader__.load({
           ) : null,
         ),
 
-        h(MemoryManager,{conversations:convs}),
+        h('div',{ref:memoryRef},h(MemoryManager,{conversations:convs})),
 
         // ══ 总提示词（我的提示词.md）══
         // 直接在面板里改，不用再去翻文件。桥每轮现读 ⇒ 保存后**下一轮就生效，不用重启桥**。

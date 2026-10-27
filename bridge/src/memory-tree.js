@@ -5,6 +5,7 @@ import crypto from 'node:crypto';
 import { createMemoryDatabase } from './memory-database.js';
 import { createMemoryExtensions } from './memory-tree-extensions.js';
 import { createStyleReview } from './style-review.js';
+import { createAffinity } from './affinity.js';
 
 const KINDS = new Set(['fact', 'event', 'agreement', 'thought','experience','observation','goal','style','knowledge']);
 const EVIDENCE = new Set(['statement', 'reported', 'inference', 'joke', 'legacy', 'admin']);
@@ -31,7 +32,7 @@ export function parseMemoryPacket(content) {
   return value?._memoryTree === 1 ? value : null;
 }
 
-export function createMemoryTree({ file, now = Date.now, sanitize = v => String(v ?? ''), embeddings, log, onForgetGoals=()=>{} }) {
+export function createMemoryTree({ file, now = Date.now, sanitize = v => String(v ?? ''), embeddings, log, onForgetGoals=()=>{}, ownerQQ=()=>'', botNames=()=>['小鲸鱼'] }) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const db = createMemoryDatabase(file, { log });
   db.exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=3000;
@@ -55,6 +56,7 @@ export function createMemoryTree({ file, now = Date.now, sanitize = v => String(
   const text = (v, n) => clean(sanitize(clean(v, n)), n);
   function observe(scope, messages) {
     scope = scopeKey(scope);
+    affinity.observe(scope,messages);
     for (const m of messages || []) {
       const id = qq(m?.userId); const name = text(m?.sender, 100);
       if (!id || !name || m.isSelf) continue;
@@ -189,6 +191,7 @@ export function createMemoryTree({ file, now = Date.now, sanitize = v => String(
         if (item.source_id) db.prepare("UPDATE sources SET excerpt='',sender_name='' WHERE id=?").run(item.source_id);
       }
       extended.onForgotten(versions.map(item=>item.id),scope);
+      affinity.forgetSources(scope,versions.map(item=>item.source_id).filter(Boolean));
       styleReview.invalidate(scope);
       db.prepare('DELETE FROM handoffs WHERE scope=?').run(scope);
     });
@@ -199,11 +202,13 @@ export function createMemoryTree({ file, now = Date.now, sanitize = v => String(
     scope = scopeKey(scope);
     const rows = db.prepare("SELECT id,kind FROM nodes WHERE scope=? AND status!='forgotten'").all(scope);
     for (const row of rows) if (!kind || row.kind === kind) { if (node(row.id,scope).status !== 'forgotten') forget(scope,row.id); }
-    if (!kind) { db.prepare('DELETE FROM people WHERE scope=?').run(scope); styleReview.clear(scope); }
+    if (!kind) { db.prepare('DELETE FROM people WHERE scope=?').run(scope); styleReview.clear(scope); affinity.clear(scope); }
     return { cleared: true };
   }
   function migrate(scope, state) {
-    scope = scopeKey(scope); observe(scope, [...(state.recentMessages || []), ...(state.unread || [])]);
+    scope = scopeKey(scope);
+    const knownMessages=[...(state.recentMessages || []), ...(state.unread || [])];
+    affinity.baseline(scope,knownMessages);observe(scope,knownMessages);
     const migrationKey = 'legacy-v1:' + scope;
     if (db.prepare('SELECT 1 FROM meta WHERE key=?').get(migrationKey)) return;
     transaction(() => {
@@ -236,7 +241,8 @@ export function createMemoryTree({ file, now = Date.now, sanitize = v => String(
     return { openRecords:ids.length, goals:activeGoals.length };
   }
   function format(scope, { messages = [], compact = true } = {}) {
-    if(!extended.settings().autoInject)return '【记忆树】自动注入已关闭，仍可按需查询。';
+    const relationship=affinity.format(scope,messages);
+    if(!extended.settings().autoInject)return relationship+'\n【记忆树】自动注入已关闭，仍可按需查询。';
     const recent=messages.filter(m=>!m?.isSelf).slice(-25);
     const ids=[...new Set(recent.map(m=>qq(m.userId)).filter(Boolean))];
     const q=recent.slice(-3).map(m=>m.plain||m.text||'').join(' ');
@@ -248,7 +254,7 @@ export function createMemoryTree({ file, now = Date.now, sanitize = v => String(
     const budget=(compact?900:2200)-Math.min(styleCost,300);let cost=tokenCost(lines[0]);
     for(const item of selected){
       const person=item.subjectUserId?db.prepare('SELECT aliases FROM people WHERE scope=? AND user_id=?').get(scope,item.subjectUserId):null;
-      const name=item.subjectUserId==='self'?'小鲸鱼自己':person?JSON.parse(person.aliases).at(-1):item.subjectUserId||item.subjectLabel||'未核实人物';
+      const name=item.subjectUserId==='self'?'小鲸鱼自己':item.subjectUserId?(person?JSON.parse(person.aliases).at(-1)+' ':'')+'QQ '+item.subjectUserId:item.subjectLabel||'未核实人物';
       const line=`- ${item.id}｜${name}｜${item.status}：${item.content}${item.nextStep?'；下一步：'+item.nextStep:''}${item.uncertain?.length?'；未确认：'+item.uncertain.slice(0,2).join('；'):''}（${new Date(item.occurredAt).toISOString().slice(0,10)}，${item.evidence}）`;
       const extraCost=tokenCost(line);if(cost+extraCost>budget)continue;lines.push(line);cost+=extraCost;if(lines.length>=(compact?7:15))break;
     }
@@ -256,7 +262,7 @@ export function createMemoryTree({ file, now = Date.now, sanitize = v => String(
     if(style&&styleCost<=300)lines.push(style);
     const h=db.prepare('SELECT * FROM handoffs WHERE scope=?').get(scope);
     if(h && now()-h.created_at<7*86400000){const open=JSON.parse(h.record_ids).filter(id=>{const n=db.prepare('SELECT status,valid_until FROM nodes WHERE id=? AND scope=?').get(id,scope);return n?.status==='active'&&(!n.valid_until||n.valid_until>now());});if(open.length)lines.push(`【上次交接】尚有 ${open.length} 项未完成，按当前有效记录继续；不要把已完成事项重新催办。`);}
-    return lines.join('\n');
+    return relationship+'\n'+lines.join('\n');
   }
   function execute(scope, request, context={}) {
     scope=scopeKey(scope);
@@ -314,7 +320,10 @@ export function createMemoryTree({ file, now = Date.now, sanitize = v => String(
   let closed=false;
   const extended = createMemoryExtensions({db,now,text,scopeKey,node,publicNode,transaction,sourceFor,insertSource,recall,forget,adminRevise,embeddings,log,words});
   const styleReview=createStyleReview({db,now,scopeKey,settings:extended.settings,store,sourceFor,transaction});
+  const affinity=createAffinity({db,now,scopeKey,ownerQQ,botNames,transaction});
   async function admin(scope,request={}) {
+    if(!request.action||request.action==='overview')return {...await extended.admin(scope,{...request,action:'overview'}),features:{memoryTree:true,styleReview:true,affinity:true,batchReview:true}};
+    if(request.action==='affinity')return {people:affinity.list(scope),periodDays:30};
     if(request.action==='styleReviews')return {review:styleReview.status(scope)};
     const result=await extended.admin(scope,request);
     return request.kind==='style'&&['list','search'].includes(request.action)?{...result,review:styleReview.status(scope)}:result;
