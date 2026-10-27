@@ -31,7 +31,7 @@ FLAG = ROOT & "\state\stop.flag"
 ' author's default install path. Keeps the folder movable / shareable.
 Function ResolveSnowDir()
   Dim p, ts, line
-  ResolveSnowDir = "E:\QQAgent\QQ Agent\resources\app\snowluma"
+  ResolveSnowDir = ""
   p = ROOT & "\snowluma-path.txt"
   If Not FSO.FileExists(p) Then Exit Function
   On Error Resume Next

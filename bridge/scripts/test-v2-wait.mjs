@@ -73,7 +73,7 @@ for (const text of finishedCases) {
 
 // 3. 配置允许长等待
 try {
-  const cfg = JSON.parse(fs.readFileSync(path.join(ROOT, 'config.example.json'), 'utf8'));
+  const cfg = JSON.parse(fs.readFileSync(path.join(ROOT, 'config.json'), 'utf8'));
   const maxMs = Number(cfg.socialV2?.wait?.maxMs) || 0;
   assert(maxMs >= END_ROUND_WAIT_MAX_MS, `wait.maxMs=${maxMs} >= 600000`);
 } catch (error) {

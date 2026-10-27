@@ -227,7 +227,8 @@ export function buildStickerContext(entries, max = 8) {
   for (const e of shuffled(coldPool)) { if (chosen.length >= cap) break; if (!chosenIds.has(e.id)) { chosen.push(e); chosenIds.add(e.id); } }
   const top = shuffled(chosen);
   const lines = top.map((e) => {
-    const label = e.desc || e.localNote || '（无备注，可先看图）';
+    // 本地认知优先：localNote 是模型自己认的这张图，可覆盖 QQ 官方备注（desc 同步时会被 QQ 端覆盖）。
+    const label = e.localNote || e.desc || '（无备注，可先看图）';
     const extra = e.tags?.length ? ` [${e.tags.join('/')}]` : '';
     const used = e.useCount ? `（用过${e.useCount}次）` : '';
     // 2026-09-20 加：把短 id 直接列出来。

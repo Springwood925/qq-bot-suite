@@ -14,8 +14,18 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { fileURLToPath } from 'node:url';
 
-const DEFAULT_ROOT = 'E:\\QQAgent\\QQ Agent\\resources\\app\\snowluma';
+function resolveDefaultRoot() {
+  if (process.env.SNOWLUMA_DIR) return process.env.SNOWLUMA_DIR;
+  try {
+    const txt = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'snowluma-path.txt');
+    const value = fs.readFileSync(txt, 'utf8').trim();
+    if (value) return value;
+  } catch { /* 没有配置文件就用环境变量 */ }
+  return '';
+}
+const DEFAULT_ROOT = resolveDefaultRoot();
 
 /**
  * 在 SnowLuma 根目录下定位当前账号的 messages.db。

@@ -326,7 +326,6 @@ export function createMemoryTree({ file, now = Date.now, sanitize = v => String(
   const styleReview=createStyleReview({db,now,scopeKey,settings:extended.settings,store,sourceFor,transaction});
   const affinity=createAffinity({db,now,scopeKey,ownerQQ,botNames,transaction});
   async function admin(scope,request={}) {
-    if(!request.action||request.action==='overview')return {...await extended.admin(scope,{...request,action:'overview'}),features:{memoryTree:true,styleReview:true,affinity:true,batchReview:true}};
     if(request.action==='affinity')return {people:affinity.list(scope),periodDays:30};
     if(request.action==='styleReviews')return {review:styleReview.status(scope)};
     const result=await extended.admin(scope,request);

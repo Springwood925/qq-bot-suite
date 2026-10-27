@@ -5,7 +5,7 @@ import {DatabaseSync} from 'node:sqlite';
 import {createMemoryTree} from '../src/memory-tree.js';
 import {explicitAttitude} from '../src/affinity.js';
 import {handleMemoryRoute} from '../src/memory-routes.js';
-const A='group:11111',B='group:22222',OWNER='33333',NOW=Date.now(),DAY=86400000;
+const A='group:11111',B='group:22222',OWNER='123456789',NOW=Date.now(),DAY=86400000;
 const msg=(seq,plain='小鲸鱼谢谢你',extra={})=>({seq,plain,userId:'11111',sender:'同名',messageId:'test-'+seq,time:NOW-10000+seq,isSelf:false,...extra});
 function fixture(t){const dir=fs.mkdtempSync(path.join(os.tmpdir(),'affinity-batch-')),file=path.join(dir,'memory.sqlite');let owner=OWNER;const tree=createMemoryTree({file,now:()=>NOW,ownerQQ:()=>owner});t.after(()=>{tree.close();assert.ok(path.resolve(dir).startsWith(path.resolve(os.tmpdir())+path.sep));fs.rmSync(dir,{recursive:true,force:true});});return {tree,file,setOwner:v=>owner=v};}
 const affinity=async(tree,scope=A,id='11111')=>(await tree.admin(scope,{action:'affinity'})).people.find(p=>p.userId===id);
@@ -13,7 +13,7 @@ function pending(tree,scope=A,seq=1,extra={}){const messages=[msg(seq)];tree.obs
 test('管理员跨会话和昵称始终100；关闭记忆自动注入仍显示真实身份',async t=>{
   const {tree,setOwner}=fixture(t);tree.observe(A,[msg(1,'小鲸鱼闭嘴',{userId:OWNER}),msg(2,'小鲸鱼谢谢你')]);
   assert.equal((await affinity(tree,A,OWNER)).score,100);assert.equal((await affinity(tree,B,OWNER)).score,100);
-  assert.match(tree.format(A,{messages:[msg(1)]}),/33333 是管理员本人/);
+  assert.match(tree.format(A,{messages:[msg(1)]}),/123456789 是管理员本人/);
   await tree.admin('',{action:'settings',settings:{autoInject:false}});assert.match(tree.format(B),/固定 100\/100/);
   setOwner('22222');assert.equal((await affinity(tree,A,'22222')).score,100);assert.equal((await affinity(tree,A,OWNER)).isAdmin,false);
 });

@@ -12,7 +12,7 @@ window.__ModuleLoader__.load({
     const React = require('react');
     const h = React.createElement;
     const { useState, useEffect, useMemo, useCallback } = React;
-    const UI_VERSION = '0.3.4';
+    const UI_VERSION = '0.3.5';
 
     // ── 小工具 ────────────────────────────────────────────────────────────
     const apiGet = (path) =>
@@ -287,6 +287,9 @@ window.__ModuleLoader__.load({
       const [cp, setCp] = useState(null);          // 服务端最新读到的一份
       const [cpDraft, setCpDraft] = useState('');  // 编辑中的文本（原文，含注释）
       const [cpSaving, setCpSaving] = useState(false);
+      // ── 攻击形态（2026-10-27 加）──────────────────────────────────────
+      const [am, setAm] = useState(null);
+      const [amDur, setAmDur] = useState(15);
 
       const flash = (t) => { setMsg(t); setTimeout(() => setMsg(''), 2500); };
 
@@ -347,10 +350,28 @@ window.__ModuleLoader__.load({
           .finally(() => setCpSaving(false));
       };
 
+      // 攻击形态（2026-10-27 加）：群里有人骂机器人 → 只对这个人切贴吧鱼人格
+      const loadAttackMode = useCallback(() => {
+        apiGet('/api/attack-mode/state')
+          .then((d) => { setAm(d); if (d && d.config) setAmDur(Number(d.config.durationMinutes) || 15); })
+          .catch(() => {});
+      }, []);
+      const saveAttack = (patch) => {
+        apiPost('/api/attack-mode/config', patch)
+          .then((d) => { setAm(d); if (d && d.config) setAmDur(Number(d.config.durationMinutes) || 15); flash('攻击形态已保存'); })
+          .catch((e) => flash('保存失败：' + ((e && e.message) || '未知')));
+      };
+      const clearAttack = () => {
+        apiPost('/api/attack-mode/clear', {})
+          .then((d) => { setAm(d); flash('已清空攻击目标'); })
+          .catch((e) => flash('清空失败：' + ((e && e.message) || '未知')));
+      };
+
       const loadSide = useCallback(() => {
         apiGet('/api/slang').then((d) => setSlang(d)).catch(() => {});
         apiGet('/api/whitelist').then((d) => setWl(d)).catch(() => {});
         loadCustomPrompt();
+        loadAttackMode();
       }, []);
 
       // 环境检测：只在「插件自带桥」的机器上有意义（开发机 isBundled=false，向导不显示）
@@ -548,6 +569,42 @@ window.__ModuleLoader__.load({
             h('span', { style: S.pill }, br.dshReady ? 'DSH 就绪' : 'DSH 未就绪'),
             h('span', { style: Object.assign({}, S.pill, br.socialV2Paused ? { color: '#d29922' } : {}) }, br.socialV2Paused ? '⏸ 已暂停' : '▶ 运行中'),
           ) : null,
+        ),
+
+        // ══ 攻击形态（按人切换，2026-10-27 加）══
+        h('div', { style: S.card },
+          h('div', { style: S.head },
+            h('span', { style: S.title }, '攻击形态'),
+            h('span', { style: Object.assign({}, S.pill, am && am.active && am.active.length ? { color: '#d29922' } : {}) },
+              am ? (am.active && am.active.length ? '目标 ' + am.active.length + ' 个' : '待命') : '读取中…'),
+            h('span', { style: { marginLeft: 'auto' } }),
+            h('span', {
+              style: Object.assign({}, S.tiny, { opacity: 0.85, cursor: 'pointer' }),
+              onClick: () => { loadAttackMode(); flash('已刷新'); },
+            }, '刷新 ↻'),
+          ),
+          h('div', { style: S.row },
+            h('button', {
+              style: S.btn,
+              onClick: () => saveAttack({ enabled: !(am && am.config && am.config.enabled) }),
+            }, am && am.config && am.config.enabled ? '关闭' : '开启'),
+            h('span', { style: S.tiny }, '持续'),
+            h('input', {
+              type: 'number', min: 1, max: 240, value: amDur,
+              onChange: (e) => setAmDur(Number(e.target.value) || 15),
+              style: { width: 64, padding: '2px 6px', borderRadius: 6, border: '1px solid rgba(128,128,128,.35)', background: 'transparent', color: 'inherit', font: 'inherit' },
+            }),
+            h('span', { style: S.tiny }, '分钟'),
+            h('button', { style: S.btn, onClick: () => saveAttack({ durationMinutes: amDur }) }, '保存'),
+            h('span', { style: { width: 10 } }),
+            h('button', { style: S.btn, onClick: clearAttack }, '清空目标'),
+          ),
+          h('div', { style: S.dim },
+            am && am.active && am.active.length
+              ? am.active.map((t) => h('div', { key: t.key },
+                  shortKey(t.key) + ' · QQ ' + t.qq + (t.name ? '（' + t.name + '）' : '') + ' · 剩 ' + Math.round((Number(t.leftSeconds) || 0) / 60) + ' 分钟'))
+              : '群里有人骂机器人时，只对这个人切「贴吧鱼」人格；其他群友保持原人格，管理员永不触发。',
+          ),
         ),
 
         h('div',{ref:memoryRef},h(MemoryManager,{conversations:convs})),

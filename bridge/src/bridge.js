@@ -28,6 +28,8 @@ import { jevAllowProactive } from './jev-gate.js';
 import { normalizeInnerLife, updateInnerLife, formatInnerLife, canInitiateInnerLife } from './inner-life.js';
 import { createAgentExec } from './agent-exec.js';
 import { createCodexMedia, attachVisionEvidence } from './codex-media.js';
+import { createScreenWatch } from './screen-watch.js';
+import { createAttackMode } from './attack-mode.js';
 import { storeGeneratedImage } from './generated-image-file.js';
 import { createMemoryTree } from './memory-tree.js';
 import { selectWakeContext } from './wake-context.js';
@@ -1041,6 +1043,8 @@ const REJECT_WORDS = new Set(['拒绝', '不同意', '不允许', '驳回', 'no'
 async function main() {
   const cfg = loadConfig();
   const codexMedia = createCodexMedia({ root: ROOT, log });
+  const screenWatch = createScreenWatch({ root: ROOT, log, codexMedia });
+  const attackMode = createAttackMode({ root: ROOT, log, ownerQQ: () => cfg.ownerQQ });
   fs.mkdirSync(STATE_DIR, { recursive: true });
   acquireLock();
   loadState();
@@ -2300,10 +2304,10 @@ async function main() {
   // 微信会话准入（顶层函数，2026-09-23 加）：modeAllowed 与事件读取器都要用，
   // 所以必须与 modeAllowed 同级；放进 main() 内部会导致顶层调不到。
   // 微信名字大小写归一（2026-09-23 端到端实测踩到）：
-  //   数据库读出来的昵称是**全大写** `SAMPLEUSER`，而白名单和既有会话 key 是配置时的
-  //   拼法 `SampleUser`。只做大小写敏感的比对会有两个后果：
+  //   数据库读出来的昵称是**全大写** `BSNBEARJEW`，而白名单和既有会话 key 是配置时的
+  //   拼法 `BSNBearJew`。只做大小写敏感的比对会有两个后果：
   //     ① 事件源放行了，准入这里却拦掉 ⇒ 日志"忽略未授权的微信会话"；
-  //     ② 就算放行，`wx:private:SAMPLEUSER` 和既有的 `wx:private:SampleUser` 是两个
+  //     ② 就算放行，`wx:private:BSNBEARJEW` 和既有的 `wx:private:BSNBearJew` 是两个
   //        不同的 key ⇒ 凭空多一个会话，旧会话的水位/agentToken/群友印象全成孤儿。
   //   所以：比较一律转小写，并把名字统一成**白名单里那个拼法**（拼法以配置为准）。
   // ⚠️ 名单字段是**复数**（allow.groups / deny.groups），而 kind 传进来是**单数**
@@ -2864,6 +2868,46 @@ async function main() {
             socialV2Paused: socialV2.paused,
             activity: readActivityTail(100)
           });
+          return;
+        }
+        // ── 屏幕陪看（2026-10-27 加）────────────────────────────────────────
+        // 截屏差异检测在 src/screen-watch.js（Python 帮工），变化时走 codex 订阅看图。
+        if (req.method === 'GET' && url.pathname === '/api/screen-watch/state') {
+          sendJson({ ok: true, ...screenWatch.state() });
+          return;
+        }
+        if (req.method === 'POST' && url.pathname === '/api/screen-watch/config') {
+          try {
+            const body = await readBody();
+            sendJson({ ok: true, ...screenWatch.state(), config: screenWatch.applyConfig(body) });
+          } catch (error) {
+            sendJson({ ok: false, error: String(error?.message ?? '请求体无效') }, 400);
+          }
+          return;
+        }
+        // ── 攻击形态（2026-10-27 加）────────────────────────────────────────
+        // 群里有人骂机器人 → 只对这个人切「贴吧鱼」人格，其他人保持原人格。
+        if (req.method === 'GET' && url.pathname === '/api/attack-mode/state') {
+          sendJson({ ok: true, ...attackMode.state() });
+          return;
+        }
+        if (req.method === 'POST' && url.pathname === '/api/attack-mode/config') {
+          try {
+            const body = await readBody();
+            sendJson({ ok: true, ...attackMode.state(), config: attackMode.applyConfig(body) });
+          } catch (error) {
+            sendJson({ ok: false, error: String(error?.message ?? '请求体无效') }, 400);
+          }
+          return;
+        }
+        if (req.method === 'POST' && url.pathname === '/api/attack-mode/clear') {
+          try {
+            const body = await readBody();
+            attackMode.clear(body?.key);
+            sendJson({ ok: true, ...attackMode.state() });
+          } catch (error) {
+            sendJson({ ok: false, error: String(error?.message ?? '请求体无效') }, 400);
+          }
           return;
         }
         // ── 管理员私聊本地执行（2026-10-20 加）────────────────────────────────
@@ -4455,7 +4499,7 @@ async function main() {
           }
           try {
             // 本入口只走已登录的 Codex 订阅，不静默回退到另行计费的千问/API。
-            const drawn = await codexMedia.generate(prompt);
+            const drawn = await codexMedia.generate(prompt, { subject: body.subject ?? 'auto' });
             if (caption) {
               try { await sendMessagesV2(key, [caption], [0], null, null); } catch (error) { log(`[draw] 配文发送失败：${error?.message ?? error}`); }
             }
@@ -4467,7 +4511,7 @@ async function main() {
             rememberMedia('recordExperience',key,{tool:'qq_draw_image',callId:'generated:'+sent.messageId,summary:'已实际生成并发送图片；创作要求：'+prompt,metadata:{messageRef:String(sent.messageId),model:drawn.model}});
             appendActivity(`${key} 画图：${prompt.slice(0, 40)}（${(drawn.elapsedMs / 1000).toFixed(0)}s）`);
             log(`[draw] 已发送到 ${key}（${drawn.model}，${(drawn.elapsedMs / 1000).toFixed(1)}s）`);
-            sendJson({ ok: true, key, model: drawn.model, elapsedMs: drawn.elapsedMs, messageId: sent.messageId });
+            sendJson({ ok: true, key, model: drawn.model, elapsedMs: drawn.elapsedMs, messageId: sent.messageId, ...(drawn.selfReference ? { selfReference: drawn.selfReference } : {}) });
           } catch (error) {
             log(`[draw] 失败：${error?.message ?? error}`);
             sendJson({ ok: false, error: String(error?.message ?? error) }, 500);
@@ -4702,7 +4746,7 @@ async function main() {
           // ── 微信会话（2026-09-23 加）──────────────────────────────────────
           // AI 回复走 MCP 工具 qq_send_message → POST 到本端点。微信 key 形如
           // `wx:private:昵称`，不匹配下面的数字正则，之前会直接被 400 挡掉
-          // （实测 AI 反馈："微信会话发送失败…qq_send_message(key=wx:private:SampleUser)"）。
+          // （实测 AI 反馈："微信会话发送失败…qq_send_message(key=wx:private:BSNBearJew)"）。
           // 这里提前分流到微信发送队列 —— sendToQQ 内已有 wx 分支（→ wxSendQueue → wx-send.mjs）。
           // 只在 key 以 wx: 开头时分流；QQ 的 key 一律走下面原有逻辑，行为不变。
           if (key.startsWith('wx:')) {
@@ -6691,6 +6735,7 @@ async function main() {
     });
     server.listen(port, '127.0.0.1', () => {
       log(`本地控制台已启动：http://127.0.0.1:${port}`);
+      try { if (screenWatch.loadConfig().enabled) screenWatch.start(); } catch (error) { log('屏幕陪看启动失败：' + String(error?.message ?? error)); }
     });
     // 端口被占用说明已有实例在跑：以 exit 2 退出，守护脚本会识别为"已有实例"而不是无限重启
     server.on('error', (error) => {
@@ -8637,7 +8682,7 @@ async function main() {
       else strangers.push({ name: n, count: 1 });
     }
     // 2026-10-06 加：印象注入必须带 QQ + 在场标记。
-    // 起因：仅按昵称匹配时，模型可能把两位不同群成员的资料混为一谈。
+    // 起因：它把群友 TURE NORD 当成印象里的「板爹」（用户当场纠正「他又不是板子哥」、群主说「搁这张冠李戴」）。
     // 印象原来只写昵称，模型没法把它跟消息里的「昵称(QQ)」对上，只能靠画像相似去猜 ⇒ 把两个人合并。
     // 现在：① 按名字从最近消息里反查 QQ；② 最近没说过话的标「最近没说话」，免得它对着空气叫名字。
     const recentAll = [
@@ -10037,7 +10082,9 @@ async function main() {
     if (wcTr.anyMessage) wcTriggers.push('任意消息');
     if (Number(wcTr.probability) > 0) wcTriggers.push(`概率${wcTr.probability}`);
     const wakeLine = `【当前唤醒】${wcMode}，${wcTime}${wcTriggers.length ? `；触发：${wcTriggers.join('/')}` : ''}\n\n`;
-    const base = roleLine + tokenLine + antiAiLine + proactiveLine + stickerLine + preSleepLine + statusLine + wakeLine + memoryLine + participationLine + innerLine + buildAgentPrivilegeLine(key);
+    const attackLine = attackMode.promptBlock(key);
+    const screenLine = screenWatch.promptBlock();
+    const base = attackLine + roleLine + tokenLine + antiAiLine + proactiveLine + stickerLine + preSleepLine + statusLine + wakeLine + screenLine + memoryLine + participationLine + innerLine + buildAgentPrivilegeLine(key);
     if (reason === 'bootstrap') {
       return `${base}【引导唤醒】你已接入 QQ 会话 ${key}。\n当前是二代仿真模式：你的文本输出不会自动发送到 QQ，所有发言必须通过工具完成。\n请先调用 qq_get_prompt 查看你的角色、推荐值、可用工具和当前状态，然后用 qq_set_wake_config 设置你希望如何被唤醒。`;
     }
@@ -10260,7 +10307,7 @@ async function main() {
     const maxPerMinute = Number(cfg.socialV2?.wake?.maxWakePerMinute) || 0;
     const maxPerHour = Number(cfg.socialV2?.wake?.maxWakePerHour) || 0;
     // ── @ / 拍一拍豁免"整点额度"（2026-09-21 加）────────────────────────
-    // 起因：示例群有人常驻聊天，12 次/小时的额度被概率唤醒吃掉后，别人直接 @ 它
+    // 起因：薯条群有人常驻聊天，12 次/小时的额度被概率唤醒吃掉后，别人直接 @ 它
     // 反而唤不动（实测连续四次「唤醒频率超限，跳过」）。现在直接呼唤不受整点额度
     // 约束（仍受每分钟额度限制，防止被无限刷屏）—— 被 @ 必须有反应。
     const isDirectCall = /^(atMention|poke)/.test(String(reason || ''));
@@ -10798,6 +10845,14 @@ async function main() {
       textContent = await segmentsToText(event.message ?? [], { resolveAtName, resolveReply });
       plainContent = await segmentsToText(event.message ?? [], { resolveAtName, includeReply: false });
       mediaList = extractMediaFromSegments(event.message ?? []);
+      // 攻击形态检测（2026-10-27）：谁骂了机器人 → 只对这个人切贴吧鱼人格
+      try {
+        attackMode.noteMessage(key, {
+          senderQQ: event.user_id,
+          senderName: event.sender?.card || event.sender?.nickname || '',
+          text: plainContent
+        });
+      } catch (error) { log('攻击形态检测出错：' + String(error?.message ?? error)); }
     }
     // B站/抖音链接自动解析（2026-09-19 加）：文本里揪到链接就后台下载并发出去。
     // ⚠️ 刻意 void 掉、**不 await** —— 下载要几秒到几十秒，绝不能卡住消息处理主流程。

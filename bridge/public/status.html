@@ -114,6 +114,43 @@
       </div>
       <div id="wxWl" style="margin-top:8px"><span class="muted">加载中…</span></div>
     </div>
+    <div class="card">
+      <h2>屏幕陪看 <span class="badge" id="swBadge">—</span></h2>
+      <div class="row" style="margin-bottom:10px">
+        <button id="swToggle">—</button>
+        <span class="muted" style="flex:1;font-size:12px">
+          开着时：屏幕变化 → 截一张图 → 走 Codex 订阅看图（不花 API 钱）→ 把描述塞进唤醒上下文。
+          默认关，免得每变一次就烧一个回合。
+        </span>
+      </div>
+      <div class="kv" id="swKv"><span class="muted">加载中…</span></div>
+      <div class="row" style="margin-top:10px">
+        <label class="muted">灵敏度阈值<br><input type="number" id="swThreshold" step="0.005" min="0.005" max="0.9" style="width:110px"></label>
+        <label class="muted">冷却(秒)<br><input type="number" id="swCooldown" min="5" step="5" style="width:110px"></label>
+        <label class="muted">只盯窗口(关键词)<br><input id="swWindow" placeholder="留空 = 任何窗口" style="width:180px"></label>
+        <span style="flex:1"></span>
+        <button id="swSave">保存</button>
+      </div>
+      <div id="swRecent" style="margin-top:10px"></div>
+    </div>
+    <div class="card">
+      <h2>攻击形态 <span class="badge" id="amBadge">—</span></h2>
+      <div class="row" style="margin-bottom:10px">
+        <button id="amToggle">—</button>
+        <span class="muted" style="flex:1;font-size:12px">
+          群里有人骂机器人时，只对**这个人**切「贴吧鱼」人格，其他群友保持原人格；管理员永不触发。
+        </span>
+      </div>
+      <div class="kv" id="amKv"><span class="muted">加载中…</span></div>
+      <div class="row" style="margin-top:10px">
+        <label class="muted">持续(分钟)<br><input type="number" id="amDuration" min="1" max="240" style="width:110px"></label>
+        <label class="muted">附加词(正则)<br><input id="amWords" placeholder="可空" style="width:200px"></label>
+        <span style="flex:1"></span>
+        <button id="amSave">保存</button>
+        <button id="amClear">清空目标</button>
+      </div>
+      <div id="amActive" style="margin-top:10px"></div>
+    </div>
   </div>
 
   <div class="sect">
@@ -1063,6 +1100,98 @@
       if (confirm('删除「' + word + '」？删了就没了。')) slangPost('/api/slang/batch-delete', { ids: [id] }, '已删除');
     }
   });
+
+  // ── 屏幕陪看 ──
+  var SW = null;
+  function renderScreenWatch(s){
+    if (!s) return;
+    SW = s;
+    document.getElementById('swBadge').textContent = s.helper === 'running' ? (s.ready ? '眼睛在线' : '启动中') : '未启动';
+    document.getElementById('swToggle').textContent = s.config.enabled ? '关闭自动陪看' : '开启自动陪看';
+    var kv = [
+      ['状态', s.config.enabled ? '自动开着' : '自动关着'],
+      ['采样间隔', s.config.intervalMs + ' ms'],
+      ['阈值', s.config.threshold],
+      ['冷却', Math.round(s.config.cooldownMs / 1000) + ' 秒'],
+      ['这一小时看过', s.recentReactions + ' 次'],
+      ['上次变化', s.lastEvent ? (s.lastEvent.title + ' · ' + ago(s.lastEvent.at)) : '—'],
+      ['看图', s.config.analyze ? '走 Codex 订阅' : '只截图不分析']
+    ];
+    if (s.lastError) kv.push(['错误', s.lastError]);
+    document.getElementById('swKv').innerHTML = kv.map(function(p){ return '<b>' + esc(p[0]) + '</b><span>' + esc(p[1]) + '</span>'; }).join('');
+    var th = document.getElementById('swThreshold'); if (document.activeElement !== th) th.value = s.config.threshold;
+    var cd = document.getElementById('swCooldown'); if (document.activeElement !== cd) cd.value = Math.round(s.config.cooldownMs / 1000);
+    var wm = document.getElementById('swWindow'); if (document.activeElement !== wm) wm.value = s.config.windowMatch || '';
+    var recent = (s.observations || []).slice(0, 3).map(function(o){
+      return '<div class="muted" style="margin-bottom:6px">' + esc(ago(o.at)) + ' · ' + esc(o.title || '未知窗口') + '：' + esc(o.description || '（无描述）') + '</div>';
+    }).join('');
+    document.getElementById('swRecent').innerHTML = recent || '<span class="muted">还没有观察记录</span>';
+  }
+  function loadScreenWatch(){
+    api('/api/screen-watch/state').then(renderScreenWatch).catch(function(e){
+      document.getElementById('swKv').innerHTML = '<span class="muted">读取失败：' + esc(e.message) + '</span>';
+    });
+  }
+  function swSave(patch){
+    return api('/api/screen-watch/config', { method: 'POST', body: patch })
+      .then(function(r){ renderScreenWatch(r); toast('屏幕陪看设置已保存', 2600); })
+      .catch(function(e){ toast('保存失败：' + e.message, 4200); });
+  }
+  document.getElementById('swToggle').addEventListener('click', function(){
+    swSave({ enabled: !(SW && SW.config.enabled) });
+  });
+  document.getElementById('swSave').addEventListener('click', function(){
+    swSave({
+      threshold: Number(document.getElementById('swThreshold').value),
+      cooldownMs: Number(document.getElementById('swCooldown').value) * 1000,
+      windowMatch: document.getElementById('swWindow').value
+    });
+  });
+  loadScreenWatch();
+
+  // ── 攻击形态 ──
+  var AM = null;
+  function renderAttackMode(s){
+    if (!s) return;
+    AM = s;
+    document.getElementById('amBadge').textContent = s.active.length ? ('目标 ' + s.active.length + ' 个') : '待命';
+    document.getElementById('amToggle').textContent = s.config.enabled ? '关闭' : '开启';
+    document.getElementById('amKv').innerHTML =
+      '<b>状态</b><span>' + (s.config.enabled ? '开' : '关') + '</span>' +
+      '<b>持续</b><span>' + s.config.durationMinutes + ' 分钟</span>' +
+      '<b>人格文本</b><span>' + (s.promptChars || 0) + ' 字符</span>';
+    var d = document.getElementById('amDuration'); if (document.activeElement !== d) d.value = s.config.durationMinutes;
+    var w = document.getElementById('amWords'); if (document.activeElement !== w) w.value = s.config.extraWords || '';
+    var rows = (s.active || []).map(function(t){
+      return '<div class="muted" style="margin-bottom:6px">' + esc(t.key) + ' · QQ ' + esc(t.qq) + (t.name ? '（' + esc(t.name) + '）' : '') + ' · 剩 ' + Math.round(t.leftSeconds / 60) + ' 分钟</div>';
+    }).join('');
+    document.getElementById('amActive').innerHTML = rows || '<span class="muted">当前没有攻击目标</span>';
+  }
+  function loadAttackMode(){
+    api('/api/attack-mode/state').then(renderAttackMode).catch(function(e){
+      document.getElementById('amKv').innerHTML = '<span class="muted">读取失败：' + esc(e.message) + '</span>';
+    });
+  }
+  function amSave(patch){
+    return api('/api/attack-mode/config', { method: 'POST', body: patch })
+      .then(function(r){ renderAttackMode(r); toast('攻击形态设置已保存', 2600); })
+      .catch(function(e){ toast('保存失败：' + e.message, 4200); });
+  }
+  document.getElementById('amToggle').addEventListener('click', function(){
+    amSave({ enabled: !(AM && AM.config.enabled) });
+  });
+  document.getElementById('amSave').addEventListener('click', function(){
+    amSave({
+      durationMinutes: Number(document.getElementById('amDuration').value),
+      extraWords: document.getElementById('amWords').value
+    });
+  });
+  document.getElementById('amClear').addEventListener('click', function(){
+    api('/api/attack-mode/clear', { method: 'POST', body: {} })
+      .then(function(r){ renderAttackMode(r); toast('已清空攻击目标', 2600); })
+      .catch(function(e){ toast('清空失败：' + e.message, 4200); });
+  });
+  loadAttackMode();
 
   refresh(); loadPrompt(); loadSlang(); loadMem(); loadWl(); setAuto(true);
 })();

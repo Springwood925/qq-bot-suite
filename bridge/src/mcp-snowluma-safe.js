@@ -1415,20 +1415,22 @@ if (cfg.socialV2?.tools?.drawImage !== false) {
     '画一张图并发到当前会话（群聊/私聊）。有人让你「画个 XXX」「来张图」时用它。'
     + '通过已登录的 Codex 订阅生成，一次一张，通常需要几十秒，也可能更久；不要因暂未返回重复调用。'
     + 'prompt 写得越具体越好：主体、动作、风格、颜色、背景。'
+    + '画面包含你自己时必须设 subject=self；系统会附上管理员确认的正面、侧面、背面三张原图作为生图参考。只画其他对象时设 subject=other，不能用其他对象冒充自身。旧连接未传 subject 时会自动携带三视图供自身画面参考。'
     + '不要画真人照片、不要画违规或敏感内容；群友要求画这类东西时礼貌拒绝。',
     {
       key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
       token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
       prompt: z.string().describe('画面描述，例如「一只戴墨镜的蓝色小鲸鱼，Q版卡通，白色背景」'),
+      subject: z.enum(['self', 'other', 'auto']).optional().describe('self=包含机器人自身；other=只有其他主体；省略或auto=携带已登记三视图并按画面内容决定是否使用'),
       caption: z.string().optional().describe('可选配文：会先发这条文字，再发图。不填就只发图'),
       replyToMessageId: z.union([z.number(), z.string()]).optional().describe('可选：要引用的消息 id'),
       atUserId: z.union([z.number(), z.string()]).optional().describe('可选：要 @ 的群成员 QQ 号')
     },
-    async ({ key, token, prompt, caption, replyToMessageId, atUserId }) => {
+    async ({ key, token, prompt, subject, caption, replyToMessageId, atUserId }) => {
       try {
         const data = await agentApi('/api/socialV2/draw', {
           method: 'POST',
-          body: JSON.stringify({ key, prompt, caption, replyToMessageId, atUserId }),
+          body: JSON.stringify({ key, prompt, subject, caption, replyToMessageId, atUserId }),
           headers: { 'x-agent-token': token },
           timeoutMs: 420000
         });
