@@ -159,11 +159,12 @@ export function createMemoryExtensions({db,now,text,scopeKey,node,publicNode,tra
   }
   function observation(scope,{messageId,vision,images=[]}){
     if(!settings().imageMemory||vision?.status!=='ok'||!Array.isArray(vision.images)||!vision.images.length)return {skipped:true};
-    const descriptions=vision.images.slice(0,4).map((item,i)=>`图${item.index||i+1}：${text(item.description,280)}`);
+    const descriptions=vision.images.slice(0,4).map((item,i)=>`图${item.index||i+1}：${text(item.description,280)}${item.self_identity?'；虚拟角色对照：'+({self:'含自身形象',not_self:'不是自身形象',uncertain:'是否自身尚未确定'}[item.self_identity.verdict]||'尚未确定')+'（'+(item.self_identity.basis==='confirmed_reference'?'已确认图片完全匹配':'视觉判断，保留不确定性')+'）':''}`);
     const uncertain=vision.images.flatMap(item=>item.uncertain||[]).map(s=>text(s,160)).filter(Boolean).slice(0,8);
     const visibleText=vision.images.flatMap(item=>item.visible_text||[]).map(s=>text(s,180)).slice(0,12);
     const digest=hash(images.filter(i=>i?.data).map(i=>hash(i.data)).join(':')||String(messageId));
-    return insertTrusted(scope,{kind:'observation',key:'image:'+messageId+':'+digest.slice(0,20),sourceRef:'vision:'+messageId+':'+digest,evidence:'visual',content:(uncertain.length?'【存在未确认内容，不能据此断言身份或出处】':'')+descriptions.join('；'),excerpt:visibleText.join('；'),metadata:{messageRef:String(messageId),imageDigest:digest,uncertain,visibleText,answer:text(vision.answer,800),observedAt:now(),interpretation:'辅助视觉观察，保留不确定性；并非确定身份事实'}});
+    const selfIdentity=vision.images.slice(0,4).filter(item=>item.self_identity).map(item=>({index:item.index,...item.self_identity}));
+    return insertTrusted(scope,{kind:'observation',key:'image:'+messageId+':'+digest.slice(0,20),sourceRef:'vision:'+messageId+':'+digest,evidence:'visual',content:(uncertain.length?'【存在未确认内容，不能据此断言身份或出处】':'')+descriptions.join('；'),excerpt:visibleText.join('；'),metadata:{messageRef:String(messageId),imageDigest:digest,uncertain,visibleText,answer:text(vision.answer,800),...(selfIdentity.length?{selfIdentity,identityReference:vision.identity_reference,identityIsVisualCharacterOnly:true}:{}),observedAt:now(),interpretation:'辅助视觉观察，保留不确定性；并非确定身份事实'}});
   }
   function experience(scope,{tool,callId,result,ok=true,summary,metadata:m={}}){
     if(!settings().experienceMemory||!ok)return {skipped:true};

@@ -15,3 +15,6 @@ bridge/wechatauto_logs/
 **/*.sqlite*
 **/*.db*
 **/*.zip
+
+# 管理员本机确认的自身形象图库配置
+bridge/self-identity.json

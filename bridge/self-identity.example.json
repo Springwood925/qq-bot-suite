@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "enabled": false,
+  "name": "机器人自身形象",
+  "features": [
+    {"id":"hair","description":"填写已确认的发型等外观特征，允许动作与角度变化","distinctive":false},
+    {"id":"structure","description":"填写有区分度的角色结构；服装和单一发色不作为独特身份条件","distinctive":true}
+  ],
+  "references": []
+}

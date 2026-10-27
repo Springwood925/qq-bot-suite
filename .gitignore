@@ -45,3 +45,6 @@ bridge/wechatauto_logs/
 /deployment.json
 /acceptance.json
 
+
+# 管理员本机确认的自身形象图库配置
+bridge/self-identity.json
