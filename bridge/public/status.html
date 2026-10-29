@@ -151,6 +151,41 @@
       </div>
       <div id="amActive" style="margin-top:10px"></div>
     </div>
+    <div class="card">
+      <h2>表达回顾 <span class="badge" id="srBadge">手动</span></h2>
+      <div class="row">
+        <select id="srKey"></select>
+        <button id="srTrigger">现在回顾一次</button>
+        <span class="muted" style="flex:1;font-size:12px">
+          手动跑一次表达回顾：机器人用现有语料检查自己表达上的问题，产出 1~2 条候选（需确认才生效）。会触发该会话一轮唤醒。
+        </span>
+      </div>
+      <div id="srResult" class="muted" style="margin-top:8px"></div>
+    </div>
+    <div class="card">
+      <h2>记忆管理 <span class="badge" id="mmBadge">分级</span></h2>
+      <div class="row">
+        <select id="mmKey"></select>
+        <select id="mmLevel">
+          <option value="all">全部级别</option>
+          <option value="L3">L3 核心</option>
+          <option value="L2">L2 稳定</option>
+          <option value="L1">L1 事件</option>
+          <option value="L0">L0 临时</option>
+        </select>
+        <select id="mmStatus">
+          <option value="all">全部状态</option>
+          <option value="unverified">待核实</option>
+          <option value="active">生效中</option>
+          <option value="archived">已归档</option>
+        </select>
+        <button id="mmLoad">加载</button>
+        <span class="muted" style="flex:1;font-size:12px">
+          按级别/状态筛选；待核实的可以确认或归档。级别是"默认怎么用"，不是真假证明。
+        </span>
+      </div>
+      <div id="mmList" style="margin-top:10px;max-height:360px;overflow:auto"></div>
+    </div>
   </div>
 
   <div class="sect">
@@ -949,6 +984,23 @@
     });
   }
 
+  // 会话下拉从实际会话列表填（页面里不写死群号/QQ，避免隐私外流）
+  function fillConvSelects(){
+    ['srKey','mmKey'].forEach(function(id){
+      var sel = document.getElementById(id);
+      if (!sel) return;
+      var cur = sel.value;
+      sel.innerHTML = '';
+      (STATE.convs || []).forEach(function(c){
+        var o = document.createElement('option');
+        o.value = c.key;
+        o.textContent = c.title || c.key;
+        sel.appendChild(o);
+      });
+      if (cur && (STATE.convs || []).some(function(c){ return c.key === cur; })) sel.value = cur;
+    });
+  }
+
   function refresh(){
     if (!TOKEN){ toast('缺少访问令牌：请通过带 ?token= 的链接打开本页', 5000); }
     api('/api/status').then(renderBridge).catch(function(e){ document.getElementById('hText').textContent = '读取失败：' + e.message; });
@@ -959,6 +1011,7 @@
     });
     api('/api/socialV2/states').then(function(s){
       STATE.convs = (s.conversations || []).slice();
+      fillConvSelects();
       renderLevels();
       // 显示"最后更新"，这样一眼能看出数据是不是新的（以前刷新悄悄卡住都看不出来）
       var lu = document.getElementById('lastUpd');
@@ -1155,7 +1208,7 @@
     if (!s) return;
     AM = s;
     document.getElementById('amBadge').textContent = s.active.length ? ('目标 ' + s.active.length + ' 个') : '待命';
-    document.getElementById('amToggle').textContent = s.config.enabled ? '关闭' : '开启';
+    document.getElementById('amToggle').textContent = s.config.enabled ? '攻击形态：已开启（点此关闭）' : '攻击形态：已关闭（点此开启）';
     document.getElementById('amKv').innerHTML =
       '<b>状态</b><span>' + (s.config.enabled ? '开' : '关') + '</span>' +
       '<b>持续</b><span>' + s.config.durationMinutes + ' 分钟</span>' +
@@ -1191,7 +1244,68 @@
       .then(function(r){ renderAttackMode(r); toast('已清空攻击目标', 2600); })
       .catch(function(e){ toast('清空失败：' + e.message, 4200); });
   });
+  // ── 记忆管理（分级列表 + 确认/归档）──
+  (function(){
+    var list = document.getElementById('mmList');
+    function load(){
+      var key = document.getElementById('mmKey').value;
+      var level = document.getElementById('mmLevel').value;
+      var status = document.getElementById('mmStatus').value;
+      list.textContent = '加载中…';
+      api('/api/memory-admin?key=' + encodeURIComponent(key) + '&action=list&level=' + encodeURIComponent(level) + '&status=' + encodeURIComponent(status) + '&limit=50')
+        .then(function(r){
+          var rows = r.records || [];
+          list.innerHTML = '';
+          if (!rows.length) { list.textContent = '没有符合条件的记忆'; return; }
+          rows.forEach(function(n){
+            var d = document.createElement('div');
+            d.style.cssText = 'padding:6px 0;border-bottom:1px solid rgba(128,128,128,.15);font-size:12px;line-height:1.5';
+            var head = document.createElement('div');
+            head.textContent = '[' + (n.memoryLevel || '?') + '/' + (n.status || '?') + '] ' + String(n.content || '').slice(0, 140);
+            d.appendChild(head);
+            var meta = document.createElement('div');
+            meta.className = 'muted';
+            meta.style.fontSize = '11px';
+            meta.textContent = String(n.id || '').slice(0, 8) + ' · ' + (n.kind || '') + ' · 重要度' + (n.importance || 1) + ' · ' + (n.evidence || '');
+            d.appendChild(meta);
+            if (n.status === 'unverified') {
+              var btns = document.createElement('div');
+              var ok = document.createElement('button');
+              ok.textContent = '确认'; ok.style.cssText = 'font-size:11px;margin:4px 6px 0 0';
+              ok.onclick = function(){ act({ action: 'confirm', key: key, id: n.id }); };
+              var no = document.createElement('button');
+              no.textContent = '归档'; no.style.cssText = 'font-size:11px;margin-top:4px';
+              no.onclick = function(){ act({ action: 'archive', key: key, id: n.id }); };
+              btns.appendChild(ok); btns.appendChild(no);
+              d.appendChild(btns);
+            }
+            list.appendChild(d);
+          });
+        })
+        .catch(function(e){ list.textContent = '加载失败：' + e.message; });
+    }
+    function act(body){
+      api('/api/memory-admin', { method: 'POST', body: body })
+        .then(function(){ load(); })
+        .catch(function(e){ alert('操作失败：' + e.message); });
+    }
+    document.getElementById('mmLoad').onclick = load;
+    document.getElementById('mmKey').onchange = load;
+    document.getElementById('mmLevel').onchange = load;
+    document.getElementById('mmStatus').onchange = load;
+  })();
+
   loadAttackMode();
+
+  // ── 表达回顾（手动触发）──
+  document.getElementById('srTrigger').addEventListener('click', function(){
+    var key = document.getElementById('srKey').value;
+    var out = document.getElementById('srResult');
+    out.textContent = '发起中…';
+    api('/api/style-review/trigger', { method: 'POST', body: { key: key } })
+      .then(function(r){ out.textContent = r.message || ('已发起，reviewId=' + r.reviewId); })
+      .catch(function(e){ out.textContent = '发起失败：' + e.message; });
+  });
 
   refresh(); loadPrompt(); loadSlang(); loadMem(); loadWl(); setAuto(true);
 })();

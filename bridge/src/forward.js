@@ -167,19 +167,20 @@ function collectSegmentMeta(content) {
 
 export function formatForwardResponse(data, options = {}) {
   const maxMessages = Math.max(1, Math.min(100, Number(options.maxMessages) || 50));
+  const offset = Math.max(0, Math.min(1000, Number(options.offset) || 0));
   const maxCharsPerMessage = Math.max(1, Math.min(2000, Number(options.maxCharsPerMessage) || 500));
   const raw = Array.isArray(data) ? data : (Array.isArray(data?.messages) ? data.messages : []);
   const total = raw.length;
-  const truncatedByCount = total > maxMessages;
+  const truncatedByCount = total > offset + maxMessages;
   let textTruncated = false;
-  const messages = raw.slice(0, maxMessages).map((node, index) => {
+  const messages = raw.slice(offset, offset + maxMessages).map((node, index) => {
     const fullText = nodeText(node);
     const text = fullText.slice(0, maxCharsPerMessage);
     if (fullText.length > maxCharsPerMessage) textTruncated = true;
     const content = nodeContent(node);
     const meta = collectSegmentMeta(content);
     return {
-      index: index + 1,
+      index: offset + index + 1,
       sender: senderName(node),
       userId: senderUserId(node),
       time: nodeTime(node),
@@ -192,6 +193,7 @@ export function formatForwardResponse(data, options = {}) {
   });
   return {
     total,
+    offset,
     truncated: truncatedByCount || textTruncated,
     textTruncated,
     messages

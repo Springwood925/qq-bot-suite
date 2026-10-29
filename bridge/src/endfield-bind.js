@@ -42,7 +42,7 @@ export class EndfieldStore {
  * 构造桥要注入的上下文：所有发送都走 SnowLuma 的 HTTP 接口（不走桥的 sendChain ——
  * 绑定是一次性低频交互，不影响群聊顺序；代价是这条消息不进 recentMessages，可接受）。
  */
-export function createEndfieldCtx({ cfg, log, ROOT }) {
+export function createEndfieldCtx({ cfg, log, ROOT, fetchOneBot = fetch }) {
   const store = new EndfieldStore(ROOT);
   const httpUrl = String(cfg.snowluma?.httpUrl || 'http://127.0.0.1:3000').replace(/\/+$/, '');
   const auth = cfg.snowluma?.httpAccessToken || cfg.snowluma?.accessToken || '';
@@ -50,7 +50,7 @@ export function createEndfieldCtx({ cfg, log, ROOT }) {
 
   async function post(action, body, timeout = 90000) {
     try {
-      const res = await fetch(`${httpUrl}/${action}`, { method: 'POST', headers: H, body: JSON.stringify(body), signal: AbortSignal.timeout(timeout) });
+      const res = await fetchOneBot(`${httpUrl}/${action}`, { method: 'POST', headers: H, body: JSON.stringify(body), signal: AbortSignal.timeout(timeout) });
       const j = await res.json().catch(() => ({}));
       const ok = res.ok && j.status === 'ok' && (j.retcode ?? 0) === 0;
       return { ok, body: j, error: ok ? null : (j.wording || j.message || `HTTP ${res.status}`) };

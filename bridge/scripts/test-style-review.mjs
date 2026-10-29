@@ -49,9 +49,9 @@ test('人物称呼、账号和凭据不能进入表达原则，未知维度和�
   assert.throws(()=>submit(tree,offer,[candidate({criterion:'always-agree'})]),/维度/);
   assert.throws(()=>submit(tree,offer,[candidate(),candidate(),candidate()]),/最多2/);
 });
-test('待审核候选存在时停止新回顾，归档后仍遵守每日间隔',t=>{
+test('待审核候选不会永久阻塞后续真实对话回顾',t=>{
   const {tree,tick}=fixture(t),offer=offered(tree);submit(tree,offer,[candidate()]);tick(NOW+86400001);
-  assert.equal(tree.offerStyleReview(A,messages(31,30,NOW+86400001)),null);
+  assert.ok(tree.offerStyleReview(A,messages(31,30,NOW+86400001)));
 });
 test('全局滚动24小时最多两次，失败和取消也占额度以免反复触发',t=>{
   const {tree}=fixture(t);const first=offered(tree);tree.cancelStyleReview(A,first.id);offered(tree,messages(),B);

@@ -29,20 +29,33 @@ export function createStyleReview({ db, now, scopeKey, settings, store, sourceFo
   function invalidate(scope) {
     db.prepare("UPDATE style_review_runs SET status='cancelled',reason='memory-forgotten' WHERE scope=? AND status='issued'").run(scopeKey(scope));
   }
-  function offer(scope, messages = []) {
+  function offer(scope, messages = [], options = {}) {
+    const force = options?.force === true;
     scope = scopeKey(scope);
     if (!enabled() || !/^(group|private):/.test(scope)) return null;
     const state = db.prepare('SELECT * FROM style_review_state WHERE scope=?').get(scope);
     if (!state) { baseline(scope, messages); return null; }
+    // 2026-10-29：清掉超过 7 天没人确认的表达候选——旧候选不能把回顾永久堵死。
+    try {
+      db.prepare("UPDATE nodes SET status='archived' WHERE scope=? AND kind='style' AND status='unverified' AND updated_at < ?").run(scope, now() - 7 * DAY);
+    } catch { /* 清理失败不影响回顾 */ }
     const eligible = messages.filter(m => Number.isFinite(Number(m.time)) && m.time > now() - DAY && m.time <= now() + 60000 && body(m).length >= 2);
     const incomingNew=eligible.filter(m=>!m.isSelf && Number.isSafeInteger(seq(m)) && seq(m)>state.cursor && /^[1-9]\d{4,19}$/.test(String(m.userId||'')));
     const firstIncoming=Math.min(...incomingNew.map(m=>Number(m.time)));
-    const valid = [...new Map(eligible.filter(m=>m.isSelf ? (Number(m.time)>=firstIncoming && (m.messageId || Number.isSafeInteger(seq(m)) && seq(m)>0)) : incomingNew.includes(m))
+    const anchor = Number.isFinite(firstIncoming) ? firstIncoming : -Infinity;
+    const valid = [...new Map(eligible.filter(m=>m.isSelf ? (Number(m.time)>=anchor && (m.messageId || Number.isSafeInteger(seq(m)) && seq(m)>0)) : incomingNew.includes(m))
       .map(m=>[m.isSelf?'self:'+String(m.messageId||'seq:'+seq(m)):'incoming:'+seq(m),m])).values()].sort((a,b)=>Number(a.time)-Number(b.time)).slice(-40);
     const incoming = valid.filter(m => !m.isSelf), own = valid.filter(m => m.isSelf);
-    if (incoming.length < 12 || own.length < 3 || (state.last_issued_at && now() - state.last_issued_at < DAY)) return null;
-    if (db.prepare("SELECT 1 FROM nodes WHERE scope=? AND kind='style' AND status='unverified' LIMIT 1").get(scope)) return null;
+    // 2026-10-29 改：不再因为"有未确认候选"而阻塞（旧逻辑会让会话永久卡死）；频率限制只在非手动时生效。
+    if (!force) {
+      if (incoming.length < 12 || own.length < 3 || (state.last_issued_at && now() - state.last_issued_at < DAY)) return null;
+      if (db.prepare('SELECT count(*) AS n FROM style_review_runs WHERE issued_at>?').get(now()-DAY).n >= 2) return null;
+    }
+    // 手动只放宽自动触发门槛，仍须满足提交证据和全局额度。
+    if (incoming.length < 3 || own.length < 2) return null;
     if (db.prepare('SELECT count(*) AS n FROM style_review_runs WHERE issued_at>?').get(now()-DAY).n >= 2) return null;
+    if (db.prepare("SELECT 1 FROM style_review_runs WHERE scope=? AND status='issued' AND issued_at>?").get(scope,now()-DAY)) return null;
+    if (db.prepare("SELECT count(*) AS n FROM nodes WHERE scope=? AND kind='style' AND status='unverified'").get(scope).n >= 20) return null;
     return transaction(() => {
       db.prepare("UPDATE style_review_runs SET status='expired',reason='not-completed' WHERE scope=? AND status='issued' AND issued_at<=?").run(scope,now()-DAY);
       const id = crypto.randomUUID(), cursor = Math.max(...incoming.map(seq));
@@ -50,7 +63,7 @@ export function createStyleReview({ db, now, scopeKey, settings, store, sourceFo
       db.prepare('INSERT INTO style_review_runs(id,scope,issued_at,cursor,refs,status) VALUES (?,?,?,?,?,?)').run(id,scope,now(),cursor,JSON.stringify(selected.map(ref)),'issued');
       db.prepare('UPDATE style_review_state SET cursor=?,last_issued_at=? WHERE scope=?').run(cursor,now(),scope);
       db.prepare('DELETE FROM style_review_runs WHERE scope=? AND id NOT IN (SELECT id FROM style_review_runs WHERE scope=? ORDER BY issued_at DESC,rowid DESC LIMIT 50)').run(scope,scope);
-      return { id, prompt: `\n\n【表达回顾 ${id}】先处理本次交流，再基于上面已给的对话用一次工具调用报告回顾结果；不额外查历史、不向聊天对象汇报。只检查自己是否承接语境、解释过多、无谓追问、指向不清或拆句不当，不抄别人口吻，不修改人格。最多2条候选，每条100字内；sourceSeqs取至少3条收到消息的seq数字，selfRefs取至少2条自己实际回复的#消息ID字符串；criterion为context/length/question/reference/humor/splitting。用qq_memory_append(category="activeTopic",content为JSON字符串)提交：{"_memoryTree":1,"action":"review","reviewId":"${id}","candidates":[{"content":"自己的表达原则","sourceSeqs":[],"selfRefs":[],"criterion":"context"}]}。没有明确改进用candidates:[]，不要凑条数。候选须管理员确认才生效；回顾不要求继续聊天或改变收尾条件，失败就跳过，不为此重试或阻塞收尾。` };
+      return { id, prompt: `\n\n【表达回顾 ${id}】先处理本次交流，再基于上面已给的对话用一次工具调用报告回顾结果；不额外查历史、不向聊天对象汇报。只检查自己是否承接语境、解释过多、无谓追问、指向不清或拆句不当，不抄别人口吻，不修改人格。最多2条候选，每条100字内；sourceSeqs取至少3条收到消息的seq数字，selfRefs取至少2条自己实际回复的#消息ID字符串；criterion为context/length/question/reference/humor/splitting。用qq_memory_append(category="activeTopic",content为JSON字符串)提交：{"_memoryTree":1,"action":"review","reviewId":"${id}","candidates":[{"content":"自己的表达原则","sourceSeqs":[],"selfRefs":[],"criterion":"context"}]}。没有明确改进就传空数组，不要凑条数。本轮提交一次即可，无变化也可 candidates:[]；失败或条件不符就收尾，不反复调用。候选须管理员确认才生效；回顾不要求继续聊天或改变收尾条件。` };
     });
   }
   function submit(scope, request, context) {
@@ -86,18 +99,22 @@ export function createStyleReview({ db, now, scopeKey, settings, store, sourceFo
         factKey:'style-review:'+hash(content).slice(0,24),tags:['回顾候选',candidate.criterion],own };
     });
     return transaction(() => {
+      // 学习三档（商品计划书 §6）：record=仅记录不进上下文；review=候选待人确认（默认/现状）；自动试用尚未开放
+      const mode = ['record', 'review'].includes(settings().styleLearningMode) ? settings().styleLearningMode : 'review';
+      // 自动生效暂缓：模型自报维度不构成风险评估或管理员确认。
       const ids=[];
       for (const item of prepared) {
         if(db.prepare("SELECT 1 FROM nodes WHERE scope=? AND kind='style' AND content=? AND status NOT IN ('forgotten','superseded') LIMIT 1").get(scope,item.content))continue;
         const {own,...input}=item;
         const result=store(scope,input,context);ids.push(result.record.id);
+        if (mode === 'record') db.prepare("UPDATE nodes SET status='archived' WHERE id=?").run(result.record.id);
         const row=db.prepare('SELECT metadata FROM node_details WHERE node_id=?').get(result.record.id);
         const metadata=JSON.parse(row?.metadata||'{}');
         metadata.styleReview={id:run.id,criterion:item.tags[1],selfSources:own.map(n=>ownRefs.get(n)),meaning:'只证明这次回顾引用了实际消息；不证明表达质量已经改善'};
         db.prepare('UPDATE node_details SET metadata=? WHERE node_id=?').run(JSON.stringify(metadata),result.record.id);
       }
       db.prepare("UPDATE style_review_runs SET status='completed',candidate_ids=?,completed_at=? WHERE id=?").run(JSON.stringify(ids),now(),run.id);
-      return {reviewed:true,candidateIds:ids,needsAdminConfirmation:ids.length>0};
+      return {reviewed:true,candidateIds:ids,needsAdminConfirmation:ids.length>0&&mode!=='record'};
     });
   }
   function status(scope) {

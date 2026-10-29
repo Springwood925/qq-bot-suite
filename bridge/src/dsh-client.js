@@ -578,8 +578,7 @@ export function createTurnCollector() {
       if (event.type === 'turn/end') {
         const t = turns.get(event.data.turn);
         turns.delete(event.data.turn);
-        if (!t) return null;
-        return { turn: event.data.turn, reason: event.data.reason, text: t.text };
+        return { turn: event.data.turn, reason: event.data.reason, text: t?.text || '', missingStart: !t };
       }
       return null;
     },

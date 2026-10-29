@@ -1,5 +1,17 @@
 # 更新记录
 
+## 0.3.6
+
+- **记忆分级 L0~L3**：记忆节点新增 `memory_level / importance / evidence_strength / review_due_at / retention_policy` 五个字段；启动时自动检测并 ALTER 补列，再按类型与证据等级保守回填（提取类 L0、事件类 L1、稳定类 L2；推断/玩笑证据从 L2 降回 L1；**L3 核心不自动升**，留给管理员指定）。注入按级别排序，L0 临时记忆把预算让给 L2/L3。
+- **学习三档**：设置项 `styleLearningMode` = `record`（仅记录，候选不进上下文）/ `review`（候选待人确认，默认）/ `auto`（仅 `length`/`splitting` 两类低风险维度直接生效）。
+- **角色名解耦**：机器人自称与情绪/目标能力的判定改为读取当前角色卡，不再写死「小鲸鱼」；换角色后这些能力仍可用。
+- **记忆管理面板**：桥新增同源端点 `/api/memory-admin`（list/read/confirm/archive/forget/overview 等），控制台与插件详情页都可按「级别 + 状态」筛选、查看来源、确认或归档；`list` 支持 `level` 参数。
+- **视频理解（新模块）**：`bridge/src/video-describe.js`——视频消息到达后下载、用 ffmpeg 抽帧（默认每 2 秒一帧、最多 8 帧），交给 Codex/GPT 视觉分析，描述异步写回该消息占位；不阻塞消息流，直接 @ 机器人的视频会在分析完成后补一次唤醒。ffmpeg 路径从 `config.json` 的 `media.ffmpegPath` 读（也可用环境变量 `VIDEO_FFMPEG`）。
+- **合并转发分页**：`qq_get_forward_msg` 支持 `offset` / `limit`（默认 50 条、最大 100），返回 `total` / `offset` / `truncated`，超过一页可继续翻。
+- **表达回顾**：解除「只要存在未确认候选就永不发起新回顾」的死锁，改为频率控制（每会话 24 小时一次、全局每天两次）；超过 7 天未确认的候选自动归档；新增手动触发接口 `POST /api/style-review/trigger` 与控制台按钮。
+- **隐私**：控制台的会话下拉改为从接口动态填充，页面里不再写死群号/QQ；示例路径不再包含本机目录。
+- **文档**：新增「SnowLuma `#sl` 状态命令」注意事项——它是 SnowLuma 自带的，群友发 `#sl` 会让机器人回版本/运行时长等部署信息；建议在 SnowLuma 配置里把 `statusCommand.trigger` 改成只有自己知道的词，或直接 `enabled:false`。
+
 ## 0.3.3
 
 - 读图支持管理员本机确认的自身虚拟角色图库，同一次请求附参考图做对照，输出自身、非自身或无法确定，并区分关键身份疑点与普通画面细节模糊。

@@ -134,6 +134,8 @@ window.__ModuleLoader__.load({
       const refreshOverview=()=>call('overview').then(setOverview).catch(e=>setError(e.message));
       useEffect(()=>{refreshOverview();const timer=setInterval(refreshOverview,30000);return()=>clearInterval(timer);},[]);
       const scopes=useMemo(()=>[...new Set([...(overview?.scopes||[]).map(s=>s.scope),...conversations.map(c=>c.key)])],[overview,conversations]);
+      const scopeInfo=overview?.scopes?.find(item=>item.scope===scope);
+      const scopeRevision=scopeInfo?`${scopeInfo.updatedAt||0}:${scopeInfo.records}:${scopeInfo.pending}:${JSON.stringify(scopeInfo.reviewRevision||{})}`:'';
       useEffect(()=>{if(!scope&&scopes.length)setScope(scopes[0]);},[scopes,scope]);
       useEffect(()=>{
         const seq=++requestSeq.current;if(!scope)return;
@@ -143,8 +145,8 @@ window.__ModuleLoader__.load({
           .then(value=>{if(seq===requestSeq.current)setResult(value);})
           .catch(e=>{if(seq===requestSeq.current)setError(e.message);})
           .finally(()=>{if(seq===requestSeq.current)setBusy(false);});
-      },[scope,tab,kind,status,person,searchQ,includePending,page,reload]);
-      useEffect(()=>{setSelected([]);setBatchConfirm('');},[scope,tab,kind,status,person,searchQ,includePending,page,reload]);
+      },[scope,tab,kind,status,person,searchQ,includePending,page,reload,scopeRevision]);
+      useEffect(()=>{setSelected([]);setBatchConfirm('');},[scope,tab,kind,status,person,searchQ,includePending,page,reload,scopeRevision]);
       useEffect(()=>{setDetail(null);setForgetConfirm(false);detailSeq.current++;},[scope,tab,kind,status,person,searchQ,page]);
       const chooseScope=value=>{setScope(value);setQ('');setSearchQ('');setPage(0);setPerson('');setDiagnostic(null);setNotice('');};
       const open=async id=>{
@@ -158,6 +160,11 @@ window.__ModuleLoader__.load({
         catch(e){setError(e.message);}finally{setBusy(false);}
       };
       const runSearch=()=>{if(busy)return;setPage(0);setSearchQ(q.trim());setReload(n=>n+1);};
+      const collectRecent=async()=>{
+        if(busy||!scope)return;setBusy(true);setError('');setNotice('');
+        try{const value=await call('collectCandidates');const c=value.collection;setNotice(c.enabled?`已筛选近期 ${c.scanned} 条收到消息，新增 ${c.created} 条待核实候选，跳过重复 ${c.duplicates} 条。`+(value.candidateReview?.requested?'语义回顾已排队，等待正常唤醒并满足回顾间隔；不会额外叫醒。':'没有明确依据时不会凑候选。'):'聊天候选筛选已关闭，请在检索诊断中开启。');setTab('tree');setKind('');setPerson('');setStatus('unverified');setPage(0);setQ('');setSearchQ('');setReload(n=>n+1);await refreshOverview();}
+        catch(e){setError(e.message);}finally{setBusy(false);}
+      };
       const runDiagnostic=async(action,body={})=>{if(busy)return;setBusy(true);setError('');try{setDiagnostic(await call(action,body));await refreshOverview();}catch(e){setError(e.message);}finally{setBusy(false);}};
       const record=detail?.record;
       const records=result?.records||[];
@@ -171,13 +178,14 @@ window.__ModuleLoader__.load({
       const systemGoal=record?.kind==='goal';
       const groups=Object.keys(K).map(type=>({type,items:records.filter(r=>r.kind===type)})).filter(g=>g.items.length);
       const setField=(field,value)=>setDraft(current=>({...current,[field]:value}));
-      const select=(label,value,onChange,options)=>h('label',{style:css.label},label,h('select',{'aria-label':label,value,disabled:busy,onChange:e=>onChange(e.target.value),style:css.input},options.map(([value,label])=>h('option',{key:value,value},label))));
+      const select=(label,value,onChange,options)=>h('label',{style:{...css.label,maxWidth:'100%'}},label,h('select',{'aria-label':label,value,disabled:busy,onChange:e=>onChange(e.target.value),style:{...css.input,maxWidth:'100%'}},options.map(([value,label])=>h('option',{key:value,value,style:{color:'#111827',backgroundColor:'#ffffff'}},label))));
       const actionButton=(label,onClick,disabled=false,extra={})=>h('button',{type:'button',style:S.btn,onClick,disabled:busy||disabled,...extra},label);
       return h('section',{'aria-label':'记忆树管理',style:{...S.card,padding:14,gap:12}},
         h('div',{style:S.head},h('strong',{style:{fontSize:15}},'记忆树'),h('span',{style:S.pill},'本地存储'),overview?h('span',{style:S.dim},`${overview.totals.current ?? (overview.totals.records-overview.totals.forgotten)} 条 · ${overview.totals.pending} 条待核实`):null,h('span',{style:{marginLeft:'auto'}}),actionButton('刷新',()=>{refreshOverview();setReload(n=>n+1);})),
         h('div',{style:css.small},'在这里核对它记住了什么、从哪里得知，以及怎样被纠正。不同群与私聊各自保存。'),
+        h('div',{'aria-label':'当前会话记忆统计',style:css.small},scopeInfo?`当前会话：${scopeInfo.records} 条当前记录 · ${scopeInfo.pending} 条待核实。总存储没有 200 条上限；列表每页 20 条。`:'请选择会话查看记录。'),
         h('div',{style:{...S.row,alignItems:'end'}},
-          select('会话',scope,chooseScope,[['','选择会话'],...scopes.map(key=>{const count=overview?.scopes.find(s=>s.scope===key);return [key,shortKey(key)+(count?` · ${count.records} 条`:'')];})]),
+          select('会话',scope,chooseScope,[['','选择会话'],...scopes.map(key=>{const count=overview?.scopes.find(s=>s.scope===key);return [key,shortKey(key)+(count?` · 当前 ${count.records} 条 · 待核实 ${count.pending} 条`:'')];})]),
           h('label',{style:{...css.label,flex:1,minWidth:180}},'回忆线索',h('input',{'aria-label':'回忆线索',style:{...css.input,width:'100%'},placeholder:'如：玩一会儿就退回桌面',value:q,onChange:e=>setQ(e.target.value),onKeyDown:e=>{if(e.key==='Enter')runSearch();}})),
           actionButton('搜索',runSearch,!scope),searchQ?actionButton('清除搜索',()=>{setQ('');setSearchQ('');setPage(0);}):null),
         h('div',{role:'tablist','aria-label':'记忆分类',style:S.row},[['tree','记忆树'],['self','自己的经历'],['style','表达习惯'],['affinity','人物好感度'],['diagnostics','检索诊断']].map(([value,label])=>h('button',{key:value,type:'button',role:'tab','aria-selected':tab===value,disabled:busy,style:{...S.btn,background:tab===value?'rgba(85,150,240,.16)':'transparent',borderColor:tab===value?'#6ca9ef':'rgba(128,128,128,.4)'},onClick:()=>{setTab(value);setKind('');setStatus('');setPerson('');setPage(0);setQ('');setSearchQ('');setDiagnostic(null);}},label))),
@@ -195,10 +203,14 @@ window.__ModuleLoader__.load({
           h('div',{style:css.small},'中文嵌入在本机 CPU 运行。只搜索选定会话；模型不可用时保留关键词搜索，不切换收费 API。'),
           overview?.semantic?.error?h('div',{style:S.err},overview.semantic.error):null,
           h('div',{style:S.row},actionButton('更新当前会话索引',()=>runDiagnostic('reindex'),!scope),actionButton('查看检索用量',()=>runDiagnostic('metrics'),!scope),actionButton('运行回忆样例',()=>runDiagnostic('evaluate'),!scope)),
-          h('div',{style:css.group},h('strong',null,'功能开关'),Object.entries({semantic:'本地语义检索',autoInject:'自动注入相关记忆',styleLearning:'提出表达习惯候选',styleReview:'低频自动表达回顾',imageMemory:'保留实际图片观察',experienceMemory:'保留真实工具经历'}).map(([key,label])=>h('label',{key,style:S.label},h('input',{type:'checkbox',checked:overview?.settings?.[key]!==false,disabled:busy,onChange:e=>mutate('settings',{settings:{[key]:e.target.checked}})}),label))),
+          h('div',{style:css.group},h('strong',null,'功能开关'),Object.entries({semantic:'本地语义检索',autoInject:'自动注入相关记忆',memoryCandidates:'持续筛选明确偏好与约定（待核实）',styleLearning:'提出表达习惯候选',styleReview:'低频自动表达回顾',imageMemory:'保留实际图片观察',experienceMemory:'保留真实工具经历'}).map(([key,label])=>h('label',{key,style:S.label},h('input',{type:'checkbox',checked:overview?.settings?.[key]!==false,disabled:busy,onChange:e=>mutate('settings',{settings:{[key]:e.target.checked}})}),label))),
           diagnostic?h('div',{style:css.group},diagnostic.hitAt5!==undefined?h('div',null,diagnostic.hitAt5===null?'尚无回忆样例。先选中一条记忆，用一种新的问法保存样例。':`前5条命中率：${Math.round(diagnostic.hitAt5*100)}%（仅当前 ${diagnostic.cases.length} 个样例）`):null,
             h('pre',{style:{...S.mono,whiteSpace:'pre-wrap',wordBreak:'break-word',maxHeight:300,overflow:'auto',fontSize:11}},JSON.stringify(diagnostic,null,2))):null,
         ):h(React.Fragment,null,
+          tab==='tree'?h('section',{'aria-label':'聊天候选筛选',style:css.group},h('div',{style:S.row},actionButton('从近期聊天筛选候选',collectRecent,!scope||!/^(group|private):/.test(scope)),h('span',{style:css.small},result?.candidates?.enabled===false?'持续筛选已关闭':'新消息持续筛选 · 仅生成待核实候选')),
+            h('div',{style:css.small},'新消息本地筛选明确偏好和约定；语义回顾搭载已有唤醒，每会话最多每小时一次、全局每天最多8次，不额外启动模型任务。结果一律待核实。手动筛选使用保留的近期消息（本地7天内，回顾24小时内），不保存每句闲聊、表情或玩笑。'),
+            result?.candidateReview?h('div',{'aria-label':'聊天语义回顾状态',style:css.small},'语义回顾：'+(!result.candidateReview.enabled?'已关闭':result.candidateReview.requested?'已排队，等待正常唤醒':result.candidateReview.latest?({issued:'已安排，尚未提交',completed:'已完成，候选 '+result.candidateReview.latest.candidateCount+' 条',cancelled:'已取消，等待后续交流',expired:'已过期，等待后续交流'}[result.candidateReview.latest.status]||result.candidateReview.latest.status):'等待新交流满足条件')):null,
+            result?.candidates?.stats?h('div',{style:css.small},`最近筛选：${date(result.candidates.stats.lastScanAt)} · 累计新增候选 ${result.candidates.stats.created} 条`):null):null,
           tab==='style'?h('div',{style:css.small},'候选需要多条真实交流作依据。确认后只作本会话的表达参考，不复制真人口头禅，也不替代人格。'):null,
           tab==='style'&&result?.review?h('section',{'aria-label':'表达回顾状态',style:css.group},
             h('div',{style:css.small},'仅搭载已有唤醒；至少12条新收到消息和3条自己回复，每会话24小时最多一次、全局最多两次。未审核候选存在时暂缓；不额外叫醒或自动修改人格。'),
@@ -290,6 +302,12 @@ window.__ModuleLoader__.load({
       // ── 攻击形态（2026-10-27 加）──────────────────────────────────────
       const [am, setAm] = useState(null);
       const [amDur, setAmDur] = useState(15);
+      // ── 记忆管理（分级 L0~L3，2026-10-29 加）──────────────────────────
+      const [mmKey, setMmKey] = useState('');
+      const [mmLevel, setMmLevel] = useState('all');
+      const [mmStatus, setMmStatus] = useState('all');
+      const [mmRows, setMmRows] = useState([]);
+      const [mmBusy, setMmBusy] = useState(false);
 
       const flash = (t) => { setMsg(t); setTimeout(() => setMsg(''), 2500); };
 
@@ -365,6 +383,23 @@ window.__ModuleLoader__.load({
         apiPost('/api/attack-mode/clear', {})
           .then((d) => { setAm(d); flash('已清空攻击目标'); })
           .catch((e) => flash('清空失败：' + ((e && e.message) || '未知')));
+      };
+
+      // 记忆管理（2026-10-29 加，商品计划书 §8）：按级别/状态列出记忆，待核实的可确认或归档
+      const loadMemory = useCallback((keyOverride) => {
+        const key = String(keyOverride || mmKey || (convs[0] && convs[0].key) || '').trim();
+        if (!key) { flash('先选一个会话'); return; }
+        setMmBusy(true);
+        apiGet('/api/memory-admin?key=' + encodeURIComponent(key) + '&action=list&level=' + encodeURIComponent(mmLevel) + '&status=' + encodeURIComponent(mmStatus) + '&limit=50')
+          .then((d) => setMmRows(Array.isArray(d && d.records) ? d.records : []))
+          .catch((e) => { setMmRows([]); flash('读取记忆失败：' + ((e && e.message) || '未知')); })
+          .finally(() => setMmBusy(false));
+      }, [mmKey, mmLevel, mmStatus]); // ⚠️ 不能把 convs 放进依赖数组：它在下方才声明，定义期求值会触发 TDZ 崩溃（2026-10-29 踩过）
+      const actMemory = (id, action) => {
+        const key = String(mmKey || (convs[0] && convs[0].key) || '').trim();
+        apiPost('/api/memory-admin', { key, id, action })
+          .then(() => { flash(action === 'confirm' ? '已确认' : '已归档'); loadMemory(key); })
+          .catch((e) => flash('操作失败：' + ((e && e.message) || '未知')));
       };
 
       const loadSide = useCallback(() => {
@@ -587,7 +622,7 @@ window.__ModuleLoader__.load({
             h('button', {
               style: S.btn,
               onClick: () => saveAttack({ enabled: !(am && am.config && am.config.enabled) }),
-            }, am && am.config && am.config.enabled ? '关闭' : '开启'),
+            }, am && am.config && am.config.enabled ? '攻击形态：已开启（点此关闭）' : '攻击形态：已关闭（点此开启）'),
             h('span', { style: S.tiny }, '持续'),
             h('input', {
               type: 'number', min: 1, max: 240, value: amDur,
@@ -607,7 +642,50 @@ window.__ModuleLoader__.load({
           ),
         ),
 
-        h('div',{ref:memoryRef},h(MemoryManager,{conversations:convs})),
+        // ══ 记忆管理（分级 L0~L3，2026-10-29 加）══
+        h('div', { style: S.card },
+          h('div', { style: S.head },
+            h('span', { style: S.title }, '记忆管理'),
+            h('span', { style: S.pill }, mmRows.length ? mmRows.length + ' 条' : (mmBusy ? '读取中…' : '未加载')),
+            h('span', { style: { marginLeft: 'auto' } }),
+            h('span', {
+              style: Object.assign({}, S.tiny, { opacity: 0.85, cursor: 'pointer' }),
+              onClick: () => loadMemory(),
+            }, '刷新 ↻'),
+          ),
+          h('div', { style: S.row },
+            h('select', {
+              value: mmKey, onChange: (e) => { setMmKey(e.target.value); loadMemory(e.target.value); },
+              style: { padding: '2px 6px', borderRadius: 6, border: '1px solid rgba(128,128,128,.35)', background: '#2a2a30', color: '#eaeaea', font: 'inherit' },
+            }, (convs || []).slice(0, 12).map((c) => h('option', { key: c.key, value: c.key, style: { color: '#111', background: '#fff' } }, c.title || c.key))),
+            h('select', {
+              value: mmLevel, onChange: (e) => { setMmLevel(e.target.value); },
+              style: { padding: '2px 6px', borderRadius: 6, border: '1px solid rgba(128,128,128,.35)', background: '#2a2a30', color: '#eaeaea', font: 'inherit' },
+            }, [['all', '全部级别'], ['L3', 'L3 核心'], ['L2', 'L2 稳定'], ['L1', 'L1 事件'], ['L0', 'L0 临时']].map(([v, t]) => h('option', { key: v, value: v, style: { color: '#111', background: '#fff' } }, t))),
+            h('select', {
+              value: mmStatus, onChange: (e) => { setMmStatus(e.target.value); },
+              style: { padding: '2px 6px', borderRadius: 6, border: '1px solid rgba(128,128,128,.35)', background: '#2a2a30', color: '#eaeaea', font: 'inherit' },
+            }, [['all', '全部状态'], ['unverified', '待核实'], ['active', '生效中'], ['archived', '已归档']].map(([v, t]) => h('option', { key: v, value: v, style: { color: '#111', background: '#fff' } }, t))),
+            h('button', { style: S.btn, onClick: () => loadMemory() }, '加载'),
+          ),
+          mmRows.length
+            ? h('div', { style: { marginTop: 8, maxHeight: 340, overflow: 'auto' } },
+                mmRows.map((n) => h('div', { key: n.id, style: { padding: '6px 0', borderBottom: '1px solid rgba(128,128,128,.15)' } },
+                  h('div', { style: S.tiny }, '[' + (n.memoryLevel || '?') + '/' + (n.status || '?') + '] ' + String(n.content || '').slice(0, 140)),
+                  h('div', { style: Object.assign({}, S.tiny, { opacity: 0.65 }) },
+                    String(n.id || '').slice(0, 8) + ' · ' + (n.kind || '') + ' · 重要度' + (n.importance || 1) + ' · ' + (n.evidence || '')),
+                  n.status === 'unverified'
+                    ? h('div', { style: S.row },
+                        h('button', { style: S.btn, onClick: () => actMemory(n.id, 'confirm') }, '确认'),
+                        h('button', { style: S.btn, onClick: () => actMemory(n.id, 'archive') }, '归档'),
+                      )
+                    : null,
+                )))
+            : h('div', { style: S.dim }, '点「加载」按当前条件列出记忆；待核实的可确认或归档。级别是"默认怎么用"，不是真假证明。'),
+        ),
+
+        // 记忆详情 + 批量审核（原有的 MemoryManager，保留）
+        h('div', { ref: memoryRef }, h(MemoryManager, { conversations: convs })),
 
         // ══ 总提示词（我的提示词.md）══
         // 直接在面板里改，不用再去翻文件。桥每轮现读 ⇒ 保存后**下一轮就生效，不用重启桥**。

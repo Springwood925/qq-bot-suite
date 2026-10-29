@@ -9,6 +9,12 @@ export async function handleMemoryRoute({req,url,readBody,sendJson,tree,getState
     if(token==='') {sendJson({ok:false,error:'agent token 不能为空'},403);return;}
     if(url.pathname==='/api/socialV2/memory-admin'){
       if(token!==undefined){sendJson({ok:false,error:'记忆管理仅限 DSH 插件详情页或已授权控制台'},403);return;}
+      if(body.action==='collectCandidates'){
+        const st=getState(String(body.key||''));
+        const collection=tree.collectCandidates(st.memoryScope,st.recentMessages||[]);
+        const review=await tree.admin(st.memoryScope,{action:'requestCandidateReview'});
+        sendJson({ok:true,collection,...review,candidates:(await tree.admin(st.memoryScope,{action:'candidateStatus'})).candidates});return;
+      }
       if(body.action==='goal'){
         if(!updateGoal)throw new Error('目标管理未连接');
         const st=getState(String(body.key||''));

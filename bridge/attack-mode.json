@@ -1,1 +1,7 @@
-﻿{"enabled":true,"durationMinutes":15,"extraWords":"","maxPromptChars":3200}
+{
+  "enabled": false,
+  "durationMinutes": 15,
+  "extraWords": "",
+  "maxPromptChars": 3200,
+  "maxTargets": 5
+}

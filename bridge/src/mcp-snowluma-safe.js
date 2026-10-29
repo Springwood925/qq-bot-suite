@@ -392,7 +392,7 @@ server.tool(
 
 server.tool(
   'qq_get_unread_messages',
-  '查看指定会话的未读消息（只读，不自动标记已读）。',
+  '查看指定会话的未读消息（只读，不自动标记已读）。返回 batchId 和实际提供的 deliveredSeqs；之后的发送或已读确认仅覆盖实际看过的消息。',
   { key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'), token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'), limit: z.number().optional().describe('最多返回条数，默认 30，最大 100') },
   async ({ key, token, limit }) => {
     try {
@@ -439,11 +439,11 @@ server.tool(
 
 server.tool(
   'qq_mark_read',
-  '将指定会话的当前未读消息标记为已读（用于“看过但决定不回复”后避免重复未读）。注意：每次设置潜水/下一次唤醒前，桥接要求先用 qq_wait_for_messages(timeoutMs=300000) 完成一次沉睡前观察：5 分钟内没人说话可 mark_read 收尾沉睡；期间有人发新消息则先查看 newMessages，判断不需要你参与也可直接 mark_read 收尾；若你参与了回复，则下次想睡需重新等待观察窗口。',
-  { key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'), token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）') },
-  async ({ key, token }) => {
+  '仅将本回合实际收到的消息标记为已读（用于看过但决定不回复）；并发新消息继续保留。沉睡前按当前唤醒提示或 preSleepWaitMs 完成观察；收到新消息后先查看内容，再决定参与或收尾。',
+  { key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'), token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'), batchId: z.string().optional().describe('读取工具返回的 batchId；可省略，桥接仍只确认本回合实际看过的消息') },
+  async ({ key, token, batchId }) => {
     try {
-      const data = await agentApi('/api/socialV2/mark-read', { method: 'POST', body: JSON.stringify({ key }), headers: { 'x-agent-token': token } });
+      const data = await agentApi('/api/socialV2/mark-read', { method: 'POST', body: JSON.stringify({ key, batchId }), headers: { 'x-agent-token': token } });
       return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
     } catch (error) {
       return { content: [{ type: 'text', text: `标记已读失败：${error?.message ?? error}` }], isError: true };
@@ -604,7 +604,7 @@ server.tool(
   {
     key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
     token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
-    timeoutMs: z.number().optional().describe('总等待毫秒数；普通等待默认 30000，沉睡前观察请传 300000（最大 600000）'),
+    timeoutMs: z.number().optional().describe('总等待毫秒数；普通等待默认 30000。沉睡前观察按当前唤醒提示或返回的 preSleepWaitMs 设置，桥接按配置限制上限'),
     minNewMessages: z.number().optional().describe('至少等到多少条新消息才提前返回，默认 1'),
     quietMs: z.number().optional().describe('检测到新消息后继续等待的静默窗口（毫秒），用于判断对方是否说完了；建议 8000~12000，默认取 socialV2.wait.defaultQuietMs（当前 8000）')
   },
@@ -633,25 +633,10 @@ server.tool(
       });
       return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
     } catch (error) {
-      // 被掐断 / 网络异常时，**不要**回一个"失败"给 AI（2026-09-20 加）。
-      // 原因：等待超时本来是正常结果，桥的 timeout 响应形如 {timeout:true}。
-      // 但如果客户端先超时/连接被断，AI 收到的是 "等待失败：The operation was aborted..." ——
-      // 它会把这句理解成"桥接接口不稳定"（实测它在群里就是这么说的），然后放弃发言。
-      // 所以这里把"看起来很像是没等到"的错误，翻译成和桥一致的结果结构，
-      // 让 AI 按正常超时处理（可以再等、可以发言、可以收尾），而不是以为系统坏了。
+      // A disconnected request cannot prove that no message arrived. Never fabricate timeout:true.
       const msg = String(error?.message ?? error);
-      const looksLikeTimeout = /aborted|timeout|中断|ECONNRESET|socket hang up/i.test(msg);
-      if (looksLikeTimeout) {
-        const payload = {
-          ok: true,
-          key,
-          arrived: false,
-          timeout: true,
-          waitedMs: budget,
-          newMessages: [],
-          note: '这次等待在客户端侧到点结束了（没有等到新消息）。这不是错误，也不代表桥接出了问题；可以直接继续对话/再等一次/正常收尾。'
-        };
-        return { content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }] };
+      if (/aborted|timeout|中断|ECONNRESET|socket hang up/i.test(msg)) {
+        return {content:[{type:'text',text:JSON.stringify({ok:false,key,resultUnknown:true,timeout:false,error:'等待结果未确认，请重新读取未读消息后决定下一步；不要据此确认全部已读',detail:msg})}],isError:true};
       }
       return { content: [{ type: 'text', text: `等待失败：${msg}` }], isError: true };
     }
@@ -1159,7 +1144,7 @@ if (cfg.socialV2?.sticker?.enabled !== false && cfg.socialV2?.tools?.getStickerI
           return { content: [{ type: 'text', text: `表情没有可返回的图片：${data?.error || '未知'}` }], isError: true };
         }
         const content = [
-          { type: 'text', text: `表情 ${data.sticker?.id || stickerId}${data.sticker?.desc ? '（备注：' + data.sticker.desc + '）' : ''} 的图片内容：` },
+          { type: 'text', text: `表情 ${data.sticker?.id || stickerId}${data.sticker?.desc ? '（备注：' + data.sticker.desc + '）' : ''} 的图片内容：` + (data.image.text ? '\n' + data.image.text : '') },
           { type: 'image', mimeType: data.image.mimeType, data: data.image.data }
         ];
         return { content };
@@ -1556,15 +1541,19 @@ if (cfg.socialV2?.sticker?.enabled !== false && cfg.socialV2?.tools?.setStickerR
 if (cfg.socialV2?.tools?.getForwardMsg !== false) {
   server.tool(
     'qq_get_forward_msg',
-    '查看当前会话中出现的合并转发消息/聊天记录内容（只读）。当消息文本里出现 `[转发消息 id=...]`，或 `qq_get_unread_messages` / `qq_get_recent_messages` / `qq_get_message_detail` 返回的某条消息带 `forwardIds` / `hasForward: true` 时调用。只能查看当前会话确实收到过的转发消息 id，不能任意读取。返回内容会包含每条消息的 text、media（图片/表情元数据）与 nestedForwardIds；如果合并转发里有图片，工具会直接把最多 5 张图片以图像内容返回给视觉模型；如果里面有嵌套合并转发，会附带嵌套转发 id 和前几条预览，必要时可继续用本工具查看嵌套 id。',
+    '查看当前会话中出现的合并转发消息/聊天记录内容（只读）。当消息文本里出现 `[转发消息 id=...]`，或 `qq_get_unread_messages` / `qq_get_recent_messages` / `qq_get_message_detail` 返回的某条消息带 `forwardIds` / `hasForward: true` 时调用。只能查看当前会话确实收到过的转发消息 id，不能任意读取。**默认最多返回 50 条**：返回里的 `total` 是总条数，`truncated: true` 表示还有没给的，用 `offset`（上一页最后一条的序号）继续翻页，不要一次要太多（工具结果太长会被宿主截断）。返回内容包含每条消息的 text、media（图片/表情元数据）与 nestedForwardIds；如果合并转发里有图片，工具会直接把最多 5 张图片以图像内容返回给视觉模型；如果里面有嵌套合并转发，会附带嵌套转发 id 和前几条预览，必要时可继续用本工具查看嵌套 id。',
     {
       key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
       token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
-      id: z.string().describe('合并转发消息 id（来自消息里的 [转发消息 id=...] 或 forwardIds 数组）')
+      id: z.string().describe('合并转发消息 id（来自消息里的 [转发消息 id=...] 或 forwardIds 数组）'),
+      offset: z.number().optional().describe('从第几条开始（默认 0）；一页看不完时用 offset=这一页最后一条的序号 接着翻'),
+      limit: z.number().optional().describe('这一页最多返回多少条（默认 50，最大 100）')
     },
-    async ({ key, token, id }) => {
+    async ({ key, token, id, offset, limit }) => {
       try {
         const q = new URLSearchParams({ key, id: String(id) });
+        if (offset != null) q.set('offset', String(Math.max(0, Math.floor(Number(offset) || 0))));
+        if (limit != null) q.set('limit', String(Math.max(1, Math.min(100, Math.floor(Number(limit) || 50)))));
         const data = await agentApi(`/api/socialV2/forward-message?${q.toString()}`, {
           headers: { 'x-agent-token': token },
           timeoutMs: 120000
