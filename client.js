@@ -12,7 +12,7 @@ window.__ModuleLoader__.load({
     const React = require('react');
     const h = React.createElement;
     const { useState, useEffect, useMemo, useCallback } = React;
-    const UI_VERSION = '0.3.5';
+    const UI_VERSION = '0.3.6';
 
     // ── 小工具 ────────────────────────────────────────────────────────────
     const apiGet = (path) =>
