@@ -133,6 +133,9 @@ test('真实 MCP → HTTP 路由 → SQLite：新工具、旧入口、令牌、�
     const args={key:A,token:'fixture-token',action:'store',...req()};
     const result=await client.callTool({name:'qq_memory_tree',arguments:args});assert.ok(!result.isError,result.content?.[0]?.text);
     const record=JSON.parse(result.content[0].text).record;assert.equal(record.content,'不吃辣');
+    const source=await client.callTool({name:'qq_memory_tree',arguments:{key:A,token:'fixture-token',action:'evidence',id:record.id}});
+    assert.ok(!source.isError);assert.equal(JSON.parse(source.content[0].text).records[0].source.text,'我不吃辣');
+    assert.equal((await client.callTool({name:'qq_memory_tree',arguments:{key:B,token:'fixture-token',action:'evidence',id:record.id}})).isError,true);
     for(const patch of [{token:'wrong-token'},{key:B}])assert.equal((await client.callTool({name:'qq_memory_tree',arguments:{...args,...patch}})).isError,true);
     const old=await client.callTool({name:'qq_memory_append',arguments:{key:A,token:'fixture-token',category:'activeTopic',content:JSON.stringify({_memoryTree:1,action:'recall',id:record.id})}});
     assert.equal(JSON.parse(old.content[0].text).records[0].source.excerpt,'我不吃辣');

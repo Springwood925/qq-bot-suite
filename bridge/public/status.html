@@ -162,32 +162,21 @@
       </div>
       <div id="srResult" class="muted" style="margin-top:8px"></div>
     </div>
-    <div class="card">
-      <h2>记忆管理 <span class="badge" id="mmBadge">分级</span></h2>
-      <div class="row">
-        <select id="mmKey"></select>
-        <select id="mmLevel">
-          <option value="all">全部级别</option>
-          <option value="L3">L3 核心</option>
-          <option value="L2">L2 稳定</option>
-          <option value="L1">L1 事件</option>
-          <option value="L0">L0 临时</option>
-        </select>
-        <select id="mmStatus">
-          <option value="all">全部状态</option>
-          <option value="unverified">待核实</option>
-          <option value="active">生效中</option>
-          <option value="archived">已归档</option>
-        </select>
-        <button id="mmLoad">加载</button>
-        <span class="muted" style="flex:1;font-size:12px">
-          按级别/状态筛选；待核实的可以确认或归档。级别是"默认怎么用"，不是真假证明。
-        </span>
-      </div>
-      <div id="mmList" style="margin-top:10px;max-height:360px;overflow:auto"></div>
-    </div>
   </div>
 
+  <div class="sect card">
+    <h2>梗百科 <span class="badge" id="memeBadge">—</span></h2>
+    <div class="kv" id="memeKv"><span class="muted">加载中…</span></div>
+    <div class="row" style="margin-top:10px;flex-wrap:wrap;gap:8px">
+      <label style="display:flex;align-items:center;gap:6px;font-size:12px">
+        <input type="checkbox" id="memeEnabled"> 自动思考梗
+      </label>
+      <input id="memeQuery" placeholder="试查一个梗（如 破防 / 栓Q）" style="flex:1;min-width:160px;font-size:12px">
+      <button id="memeSearch">查</button>
+    </div>
+    <div id="memeResult" class="muted" style="margin-top:8px"></div>
+    <div class="muted" style="margin-top:9px;font-size:11px">只对问梗句式预查，命中才注入；词库数据版权归原作者与 cnmeme.wiki，代码 MIT。</div>
+  </div>
   <div class="sect">
     <h2>响应档位 <span class="badge">拖动即生效 · 不唤醒 = 不烧 token</span></h2>
     <div class="grid g2" id="levels"></div>
@@ -931,6 +920,27 @@
     })).then(renderMem);
   }
 
+  // ── 梗百科（2026-11-01 加）──────────────────────────────────────────────
+  function renderMemeWiki(d){
+    d = d || {};
+    var badge = document.getElementById('memeBadge');
+    var kv = document.getElementById('memeKv');
+    var box = document.getElementById('memeEnabled');
+    if (badge) badge.textContent = d.available ? (d.total + ' 条') : '未加载';
+    if (box) box.checked = d.enabled !== false;
+    if (!kv) return;
+    kv.innerHTML = d.available
+      ? '<div><span class="k">词条</span><span>'+d.total+' 条</span></div>'
+        + '<div><span class="k">状态</span><span>'+(d.enabled !== false ? '预查开启' : '预查已关')+'</span></div>'
+        + '<div><span class="k">触发</span><span>只对问梗句式，命中才注入</span></div>'
+      : '<span class="muted">词库未加载：'+esc(d.error || 'data/memes.db 缺失')+'</span>';
+  }
+  function loadMemeWiki(){
+    api('/api/meme-wiki').then(renderMemeWiki).catch(function(e){
+      var kv = document.getElementById('memeKv');
+      if (kv) kv.innerHTML = '<span class="muted">读取失败：'+esc(e.message)+'</span>';
+    });
+  }
   // ── 白名单与群管理 ───────────────────────────────────────────────────────
   var WL = { groups: [], allowGroups: [], denyGroups: [], allowPrivate: [], ownerQQ: null };
   function renderWl(){
@@ -1023,7 +1033,24 @@
     }).catch(function(e){ document.getElementById('levels').innerHTML = '<div class="card">读取失败：' + esc(e.message) + '</div>'; });
   }
 
-  document.getElementById('refresh').addEventListener('click', function(){ refresh(); loadPrompt(); loadSlang(); loadMem(); loadWl(); });
+  document.getElementById('refresh').addEventListener('click', function(){ refresh(); loadPrompt(); loadSlang(); loadMem(); loadWl(); loadMemeWiki(); });
+  document.getElementById('memeEnabled').addEventListener('change', function(){
+    var on = this.checked;
+    api('/api/meme-wiki', { method: 'POST', body: { enabled: on } })
+      .then(function(d){ renderMemeWiki(d); toast(on ? '梗百科已开启' : '梗百科已关闭'); })
+      .catch(function(e){ toast('保存失败：' + e.message); });
+  });
+  document.getElementById('memeSearch').addEventListener('click', function(){
+    var q = (document.getElementById('memeQuery').value || '').trim();
+    if (!q){ toast('先输入一个词'); return; }
+    api('/api/meme-wiki?q=' + encodeURIComponent(q)).then(function(d){
+      var box = document.getElementById('memeResult');
+      var hits = d.hits || [];
+      box.innerHTML = hits.length
+        ? hits.map(function(h){ return '<div style="margin-top:6px"><b>'+esc(h.title)+'</b>'+(h.tags?' <span class="muted">'+esc(h.tags)+'</span>':'')+'<div class="muted" style="margin-top:2px">'+esc(h.summary||'')+'</div></div>'; }).join('')
+        : '<span class="muted">没查到「'+esc(q)+'」</span>';
+    }).catch(function(e){ toast('查询失败：' + e.message); });
+  });
   document.getElementById('promptReload').addEventListener('click', loadPrompt);
   document.getElementById('promptSave').addEventListener('click', function(){
     var btn = this; btn.disabled = true;
@@ -1244,57 +1271,6 @@
       .then(function(r){ renderAttackMode(r); toast('已清空攻击目标', 2600); })
       .catch(function(e){ toast('清空失败：' + e.message, 4200); });
   });
-  // ── 记忆管理（分级列表 + 确认/归档）──
-  (function(){
-    var list = document.getElementById('mmList');
-    function load(){
-      var key = document.getElementById('mmKey').value;
-      var level = document.getElementById('mmLevel').value;
-      var status = document.getElementById('mmStatus').value;
-      list.textContent = '加载中…';
-      api('/api/memory-admin?key=' + encodeURIComponent(key) + '&action=list&level=' + encodeURIComponent(level) + '&status=' + encodeURIComponent(status) + '&limit=50')
-        .then(function(r){
-          var rows = r.records || [];
-          list.innerHTML = '';
-          if (!rows.length) { list.textContent = '没有符合条件的记忆'; return; }
-          rows.forEach(function(n){
-            var d = document.createElement('div');
-            d.style.cssText = 'padding:6px 0;border-bottom:1px solid rgba(128,128,128,.15);font-size:12px;line-height:1.5';
-            var head = document.createElement('div');
-            head.textContent = '[' + (n.memoryLevel || '?') + '/' + (n.status || '?') + '] ' + String(n.content || '').slice(0, 140);
-            d.appendChild(head);
-            var meta = document.createElement('div');
-            meta.className = 'muted';
-            meta.style.fontSize = '11px';
-            meta.textContent = String(n.id || '').slice(0, 8) + ' · ' + (n.kind || '') + ' · 重要度' + (n.importance || 1) + ' · ' + (n.evidence || '');
-            d.appendChild(meta);
-            if (n.status === 'unverified') {
-              var btns = document.createElement('div');
-              var ok = document.createElement('button');
-              ok.textContent = '确认'; ok.style.cssText = 'font-size:11px;margin:4px 6px 0 0';
-              ok.onclick = function(){ act({ action: 'confirm', key: key, id: n.id }); };
-              var no = document.createElement('button');
-              no.textContent = '归档'; no.style.cssText = 'font-size:11px;margin-top:4px';
-              no.onclick = function(){ act({ action: 'archive', key: key, id: n.id }); };
-              btns.appendChild(ok); btns.appendChild(no);
-              d.appendChild(btns);
-            }
-            list.appendChild(d);
-          });
-        })
-        .catch(function(e){ list.textContent = '加载失败：' + e.message; });
-    }
-    function act(body){
-      api('/api/memory-admin', { method: 'POST', body: body })
-        .then(function(){ load(); })
-        .catch(function(e){ alert('操作失败：' + e.message); });
-    }
-    document.getElementById('mmLoad').onclick = load;
-    document.getElementById('mmKey').onchange = load;
-    document.getElementById('mmLevel').onchange = load;
-    document.getElementById('mmStatus').onchange = load;
-  })();
-
   loadAttackMode();
 
   // ── 表达回顾（手动触发）──

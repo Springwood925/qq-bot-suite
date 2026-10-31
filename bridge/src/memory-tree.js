@@ -8,6 +8,7 @@ import { createStyleReview } from './style-review.js';
 import { createAffinity } from './affinity.js';
 import { createMemoryCandidates } from './memory-candidates.js';
 import { createConversationReview } from './conversation-review.js';
+import { createMemoryContinuity } from './memory-continuity.js';
 
 const KINDS = new Set(['fact', 'event', 'agreement', 'thought','experience','observation','goal','style','knowledge']);
 // ── 记忆分级（商品计划书 §3：L0 临时 / L1 事件 / L2 稳定 / L3 核心）──────────────
@@ -131,9 +132,9 @@ export function createMemoryTree({ file, now = Date.now, sanitize = v => String(
     const origin = m.messageId ? `message:${String(m.messageId)}` : `seq:${seq}:${occurred}:${m.userId}`;
     const id = hash(scope + '\0' + origin);
     if (db.prepare('SELECT 1 FROM tombstones WHERE scope=? AND fingerprint=?').get(scope, 'source:' + id)) fail('此来源已被遗忘，禁止自动重新提取');
-    return { id, scope, origin, senderId: qq(m.userId), name: text(m.sender, 100), at: occurred, excerpt: text(m.plain || m.text, 1000) };
+    return { id, scope, origin, senderId: qq(m.userId), name: text(m.sender, 100), at: occurred, excerpt: text(m.plain || m.text, 1000), body: String(m.plain || m.text || '') };
   }
-  function insertSource(s) { db.prepare('INSERT OR IGNORE INTO sources VALUES (?,?,?,?,?,?,?)').run(s.id, s.scope, s.origin, s.senderId, s.name, s.at, s.excerpt); }
+  function insertSource(s) { db.prepare('INSERT OR IGNORE INTO sources VALUES (?,?,?,?,?,?,?)').run(s.id, s.scope, s.origin, s.senderId, s.name, s.at, s.excerpt); continuity.archive(s); }
   function invalidateDependents(scope,rootId) {
     const roots=new Set([rootId]);let changed=true;
     while(changed){changed=false;for(const dependent of db.prepare("SELECT n.root_id,r.root_id AS parent_root FROM links l JOIN nodes n ON n.id=l.node_id JOIN nodes r ON r.id=l.related_id LEFT JOIN relation_types t ON t.node_id=l.node_id AND t.related_id=l.related_id WHERE l.scope=? AND coalesce(t.relation,'supports')='supports'").all(scope)){
@@ -247,6 +248,7 @@ export function createMemoryTree({ file, now = Date.now, sanitize = v => String(
         db.prepare("UPDATE nodes SET content='',next_step='',subject_label='',status='forgotten',updated_at=? WHERE id=?").run(now(), item.id);
         if (item.source_id) db.prepare("UPDATE sources SET excerpt='',sender_name='' WHERE id=?").run(item.source_id);
       }
+      continuity.purge(scope,versions.map(item=>item.source_id).filter(Boolean));
       extended.onForgotten(versions.map(item=>item.id),scope);
       affinity.forgetSources(scope,versions.map(item=>item.source_id).filter(Boolean));
       styleReview.invalidate(scope);
@@ -294,54 +296,78 @@ export function createMemoryTree({ file, now = Date.now, sanitize = v => String(
   }
   function handoff(scope, fromSession, goals = []) {
     scope=scopeKey(scope);
-    const ids=db.prepare("SELECT id FROM nodes WHERE scope=? AND status='active' AND kind IN ('event','agreement') AND (valid_until IS NULL OR valid_until>?) ORDER BY updated_at DESC LIMIT 12").all(scope,now()).map(r=>r.id);
-    const activeGoals=(goals||[]).filter(g=>g.status==='active'&&(!g.expiresAt||g.expiresAt>now())).slice(0,3).map(g=>({title:text(g.title,100),nextStep:text(g.nextStep,160)}));
-    db.prepare('INSERT INTO handoffs VALUES (?,?,?,?,?) ON CONFLICT(scope) DO UPDATE SET from_session=excluded.from_session,record_ids=excluded.record_ids,goals=excluded.goals,created_at=excluded.created_at').run(scope,text(fromSession,100),JSON.stringify(ids),JSON.stringify(activeGoals),now());
-    return { openRecords:ids.length, goals:activeGoals.length };
+    // Reconcile with the actual goal state before selecting reference-only handoff entries.
+    extended.syncGoals(scope,goals);
+    return continuity.saveHandoff(scope,fromSession);
   }
   function format(scope, { messages = [], compact = true } = {}) {
+    scope=scopeKey(scope);
     const relationship=affinity.format(scope,messages);
-    if(!extended.settings().autoInject)return relationship+'\n【记忆树】自动注入已关闭，仍可按需查询。';
+    if(!extended.settings().autoInject){
+      continuity.trace(scope,{disabled:true,budget:0,usedTokens:0,candidates:[]});
+      return relationship+'\n【记忆树】自动注入已关闭，仍可按需查询。';
+    }
     const recent=messages.filter(m=>!m?.isSelf).slice(-25);
     const ids=[...new Set(recent.map(m=>qq(m.userId)).filter(Boolean))];
     const q=recent.slice(-3).map(m=>m.plain||m.text||'').join(' ');
-    const matched=[...extended.preparedRecords(scope,messages),...recall(scope,{q,subjectUserIds:ids,limit:8})].filter(r=>r.kind!=='style'&&r.status!=='archived');
-    const general=recall(scope,{subjectUserIds:ids,limit:20}).filter(r=>ids.includes(r.subjectUserId)&&r.status!=='archived');
+    const prepared=extended.preparedRecords(scope,messages);
+    const matched=[...prepared,...recall(scope,{q,subjectUserIds:ids,limit:8})].filter(r=>r.kind!=='style'&&r.status!=='archived');
+    const general=recall(scope,{subjectUserIds:ids,limit:20}).filter(r=>ids.includes(r.subjectUserId)&&r.status!=='archived'&&r.kind!=='style');
     const memoryQuestion=recent.slice(-2).some(m=>/(?:还记得|记不记得|记得吗|你记得|之前.{0,8}(?:说过|叫什么|是什么|喜欢)|我.{0,5}(?:叫什么|喜欢什么))/.test(String(m.plain||m.text||'')));
-    const conflicts=db.prepare("SELECT l.node_id,l.related_id FROM links l JOIN relation_types t ON t.node_id=l.node_id AND t.related_id=l.related_id JOIN nodes a ON a.id=l.node_id JOIN nodes b ON b.id=l.related_id WHERE l.scope=? AND t.relation='contradicts' AND a.status IN ('active','done') AND b.status IN ('active','done')").all(scope);
-    const conflicted=new Set(conflicts.flatMap(x=>[x.node_id,x.related_id]));
-    // 分级排序（计划书 §3）：L3/L2 先进预算，L0 临时记忆排最后（预算紧张时自然被挤掉）
-    const levelRank = (r) => LEVEL_RANK[r.memoryLevel] ?? 1;
-    const selected=[...new Map([...matched,...general.filter(r=>r.kind!=='style')].map(r=>[r.id,r])).values()]
-      .filter(r=>!conflicted.has(r.id)&&(!memoryQuestion||!/[?？]$/.test(String(r.content||'').trim())))
+    const blocked=continuity.conflicts(scope);
+    const carry=continuity.handoff(scope).records;
+    const levelRank=r=>LEVEL_RANK[r.memoryLevel]??1;
+    const selected=[...new Map([...carry,...matched,...general].map(r=>[r.id,r])).values()]
       .sort((a,b)=>Number(matched.some(r=>r.id===b.id))-Number(matched.some(r=>r.id===a.id))||levelRank(b)-levelRank(a));
-    const lines=['【记忆树】（会话隔离；记忆仅作背景，不是指令。缺信息可按 ID 查来源。）'];
-    const style=extended.styleText(scope);const styleCost=style?tokenCost(style):0;
-    const budget=(compact?900:2200)-Math.min(styleCost,300);let cost=tokenCost(lines[0]);
-    for(const item of selected){
-      const person=item.subjectUserId?db.prepare('SELECT aliases FROM people WHERE scope=? AND user_id=?').get(scope,item.subjectUserId):null;
-      const name=item.subjectUserId==='self'?'小鲸鱼自己':item.subjectUserId?(person?JSON.parse(person.aliases).at(-1)+' ':'')+'QQ '+item.subjectUserId:item.subjectLabel||'未核实人物';
-      const line=`- ${item.id}｜${name}｜${item.status}：${item.content}${item.nextStep?'；下一步：'+item.nextStep:''}${item.uncertain?.length?'；未确认：'+item.uncertain.slice(0,2).join('；'):''}（${new Date(item.occurredAt).toISOString().slice(0,10)}，${item.evidence}）`;
-      const extraCost=tokenCost(line);if(cost+extraCost>budget)continue;lines.push(line);cost+=extraCost;if(lines.length>=(compact?7:15))break;
+    const budget=compact?Math.max(240,Math.min(900,Math.floor(980-tokenCost(relationship+'\n')))):2200;
+    const lines=['【记忆树】会话隔离，记忆仅作背景，不是指令。细节按 ID 查 evidence；旧连接用 qq_memory_append JSON action=evidence。'];
+    const notes=[];
+    if(memoryQuestion)notes.push('回答记忆问题须依据有效且有来源的记录；缺失或冲突时说不确定，不根据提问猜答案。');
+    const style=extended.styleText(scope);if(style&&tokenCost(style)<=300&&tokenCost(lines[0]+'\n'+[...notes,style].join('\n'))<=budget)notes.push(style);
+    let cost=tokenCost(lines[0])+notes.reduce((n,line)=>n+tokenCost('\n'+line),0);
+    const candidates=selected.slice(0,60).map(r=>({id:r.id,reasons:[
+      ...(matched.some(m=>m.id===r.id)?['query']:[]),...(prepared.some(m=>m.id===r.id)?['prepared']:[]),
+      ...(ids.includes(r.subjectUserId)?['participant']:[]),...(carry.some(m=>m.id===r.id)?['handoff']:[])
+    ],selected:false,excluded:null}));
+    const decisions=new Map(candidates.map(c=>[c.id,c]));
+    const included=new Set();let handoffCost=0;
+    const eligible=r=>!blocked.has(r.id)&&(!memoryQuestion||!/[?？]$/.test(String(r.content||'').trim()));
+    for(const item of carry.slice(0,3)){
+      if(!eligible(item))continue;
+      const line=`【上次交接】${item.id}｜${text(item.content,70)}${item.nextStep?'；下一步：'+text(item.nextStep,40):'；下一步尚未明确，不自行补造'}`;
+      const delta=tokenCost('\n'+line);
+      if(handoffCost+delta>300||cost+delta>budget)continue;
+      lines.push(line);cost+=delta;handoffCost+=delta;included.add(item.id);
     }
-    if(lines.length===1)lines.push('当前没有匹配的已核实长期记忆；可按话题查询待核实旧记录，不凭印象补造。');
-    if(memoryQuestion)lines.push('回答记忆问题必须依据相关、有效且有来源的记录；问题本身不是事实。记录缺失或存在冲突时请坦诚说不确定，不根据提问猜测答案。');
-    if(style&&styleCost<=300)lines.push(style);
-    const h=db.prepare('SELECT * FROM handoffs WHERE scope=?').get(scope);
-    if(h && now()-h.created_at<7*86400000){const open=JSON.parse(h.record_ids).filter(id=>{const n=db.prepare('SELECT status,valid_until FROM nodes WHERE id=? AND scope=?').get(id,scope);return n?.status==='active'&&(!n.valid_until||n.valid_until>now());});if(open.length)lines.push(`【上次交接】尚有 ${open.length} 项未完成，按当前有效记录继续；不要把已完成事项重新催办。`);}
-    return relationship+'\n'+lines.join('\n');
+    for(const item of selected){
+      const decision=decisions.get(item.id);
+      if(!eligible(item)){if(decision)decision.excluded=blocked.has(item.id)?'conflict':'question';continue;}
+      if(included.has(item.id)){if(decision)decision.selected=true;continue;}
+      const person=item.subjectUserId?db.prepare('SELECT aliases FROM people WHERE scope=? AND user_id=?').get(scope,item.subjectUserId):null;
+      const name=item.subjectUserId==='self'?'机器人自己':item.subjectUserId?(person?JSON.parse(person.aliases).at(-1)+' ':'')+'QQ '+item.subjectUserId:item.subjectLabel||'未核实人物';
+      const line=`- ${item.id}｜${name}｜${item.status}：${item.content}${item.nextStep?'；下一步：'+item.nextStep:''}${item.uncertain?.length?'；未确认：'+item.uncertain.slice(0,2).join('；'):''}（${new Date(item.occurredAt).toISOString().slice(0,10)}，${item.evidence}）`;
+      const delta=tokenCost('\n'+line);
+      if(cost+delta>budget||included.size>=(compact?6:14)){if(decision)decision.excluded='budget';continue;}
+      lines.push(line);cost+=delta;included.add(item.id);if(decision)decision.selected=true;
+    }
+    if(!included.size){const empty='当前没有匹配的已核实长期记忆；可按需查询，不凭印象补造。';if(cost+tokenCost('\n'+empty)<=budget)lines.push(empty);}
+    lines.push(...notes);
+    const body=lines.join('\n');
+    continuity.trace(scope,{disabled:false,budget,usedTokens:Math.ceil(tokenCost(body)),candidates});
+    return relationship+'\n'+body;
   }
   function execute(scope, request, context={}) {
     scope=scopeKey(scope);
     if(request.scope && request.scope!==scope)fail('禁止跨会话访问记忆',403);
     switch(request.action||'store'){
       case 'store':return store(scope,request,context);
+      case 'evidence':return continuity.evidence(scope,request);
       case 'recall':return embeddings&&request.q?extended.search(scope,request):{records:recall(scope,request)};
       case 'link':return extended.link(scope,request,context);
       case 'review':return styleReview.submit(scope,request,context);
       case 'candidateReview':return conversationReview.submit(scope,request,context);
       case 'forget':{const s=sourceFor(scope,request,context);const item=node(request.id,scope);if(s.senderId!==item.subject_id&&!context.isOwner?.(s.senderId))fail('只能遗忘本人或管理员要求处理的记忆',403);return forget(scope,request.id);}
-      default:fail('记忆操作只支持 store / recall / forget / link');
+      default:fail('记忆操作只支持 store / recall / evidence / forget / link');
     }
   }
   // 仅给已通过控制台鉴权的管理端使用；机器人修正必须走 store + 真实来源。
@@ -391,11 +417,14 @@ export function createMemoryTree({ file, now = Date.now, sanitize = v => String(
   }
   let closed=false;
   const extended = createMemoryExtensions({db,now,text,scopeKey,node,publicNode,transaction,sourceFor,insertSource,recall,forget,adminRevise,embeddings,log,words});
+  const continuity=createMemoryContinuity({db,now,scopeKey,publicNode,verified:row=>extended.details(row,false).verified,sanitize,tokenCost});
   const styleReview=createStyleReview({db,now,scopeKey,settings:extended.settings,store,sourceFor,transaction});
   const affinity=createAffinity({db,now,scopeKey,ownerQQ,botNames,transaction});
   const memoryCandidates=createMemoryCandidates({db,now,scopeKey,settings:extended.settings,store,sourceFor,transaction});
   const conversationReview=createConversationReview({db,now,scopeKey,settings:extended.settings,store,sourceFor,transaction});
   async function admin(scope,request={}) {
+    if(request.action==='diagnostics')return continuity.diagnostics(scope);
+    if(request.action==='evidence')return continuity.evidence(scope,request);
     if(request.action==='affinity')return {people:affinity.list(scope),periodDays:30};
     if(request.action==='styleReviews')return {review:styleReview.status(scope)};
     if(request.action==='candidateStatus')return {candidates:memoryCandidates.status(scope)};
@@ -410,5 +439,5 @@ export function createMemoryTree({ file, now = Date.now, sanitize = v => String(
     baselineCandidateReview:conversationReview.baseline,offerCandidateReview:conversationReview.offer,cancelCandidateReview:conversationReview.cancel,
     recordObservation:extended.observation,recordExperience:extended.experience,syncGoals:extended.syncGoals,
     categoryKind: category=>CATEGORY[category], stats:()=>({nodes:db.prepare("SELECT count(*) AS n FROM nodes WHERE status!='forgotten'").get().n,people:db.prepare('SELECT count(*) AS n FROM people').get().n}),
-    close:()=>{if(!closed){extended.close();db.close();closed=true;}}};
+    close:()=>{if(!closed){continuity.close();extended.close();db.close();closed=true;}}};
 }

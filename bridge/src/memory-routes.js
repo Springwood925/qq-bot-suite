@@ -1,8 +1,45 @@
 // 外层桥接已校验控制台令牌、暂停状态及工作模式；这里再做会话/工具权限验证。
-export const MEMORY_PATHS = new Set(['/api/socialV2/memory-admin','/api/socialV2/memory-tree','/api/socialV2/memory-append','/api/socialV2/memory-update','/api/socialV2/memory','/api/socialV2/memory-remove','/api/socialV2/memory-clear']);
-export async function handleMemoryRoute({req,url,readBody,sendJson,tree,getState,tokenOk,sessionAllowed,toolEnabled,ownerQQ,saveState,updateGoal}) {
+export const MEMORY_PATHS = new Set(['/api/socialV2/memory-admin','/api/socialV2/memory-tree','/api/socialV2/memory-append','/api/socialV2/memory-update','/api/socialV2/memory','/api/socialV2/memory-remove','/api/socialV2/memory-clear','/api/socialV2/self-learning']);
+export async function handleMemoryRoute({req,url,readBody,sendJson,tree,getState,tokenOk,sessionAllowed,toolEnabled,ownerQQ,saveState,updateGoal,learning,learningGuard,learningEnabled,learningMode}) {
   try {
     const query=req.method==='GET';
+    // ── 自主学习区（2026-11-01 加）：只能作用于当前会话，写操作需要服务端已启用 ──
+    if (url.pathname==='/api/socialV2/self-learning') {
+      const body=query?Object.fromEntries(url.searchParams):await readBody();
+      const token=req.headers['x-agent-token'];
+      if(!token){sendJson({ok:false,error:'缺少会话令牌'},403);return;}
+      if(!learning||typeof learningGuard!=='function'){sendJson({ok:false,error:'自主学习区未接入'},503);return;}
+      const key=String(body.key||'').trim();
+      if(!key){sendJson({ok:false,error:'缺少会话作用域'},400);return;}
+      if(!tokenOk(key,token)){sendJson({ok:false,error:'会话令牌无效'},403);return;}
+      if(!sessionAllowed(key)){sendJson({ok:false,error:'该会话不在允许范围'},403);return;}
+      const action=String(body.action||'overview');
+      const READ_ACTIONS=new Set(['list','read','overview','diagnostics','injection']);
+      if(!READ_ACTIONS.has(action)) {
+        try { learningGuard(key); } catch(error) { sendJson({ok:false,error:error?.message||'自主学习未启用'},error?.statusCode||403); return; }
+      }
+      const args={...body,scope:key};
+      let result;
+      switch(action) {
+        case 'list': result=learning.list(args); break;
+        case 'read': result=learning.read(args); break;
+        case 'overview': result=learning.overview(args); break;
+        case 'diagnostics': result=learning.diagnostics(args); break;
+        case 'injection': result=learning.injection(args); break;
+        case 'collect': result=learning.collect(args); break;
+        case 'revise': result=learning.revise(args); break;
+        case 'start_trial': result=learning.startTrial(args); break;
+        case 'review': result=learning.review(args); break;
+        case 'retain': result=learning.retain(args); break;
+        case 'pause': result=learning.pause(args); break;
+        case 'archive': result=learning.archive(args); break;
+        case 'restore': result=learning.restore(args); break;
+        case 'reject': result=learning.reject(args); break;
+        default: sendJson({ok:false,error:'未知的自主学习动作'},400); return;
+      }
+      sendJson({ok:true,action,enabled:typeof learningEnabled==='function'?learningEnabled(key):false,mode:typeof learningMode==='function'?learningMode():'record',...result});
+      return;
+    }
     if ((url.pathname==='/api/socialV2/memory' && !query) || (url.pathname!=='/api/socialV2/memory' && req.method!=='POST')) {sendJson({ok:false,error:'请求方法无效'},405);return;}
     const body=query?Object.fromEntries(url.searchParams):await readBody();
     const token=req.headers['x-agent-token'];

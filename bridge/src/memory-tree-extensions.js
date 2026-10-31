@@ -117,7 +117,10 @@ export function createMemoryExtensions({db,now,text,scopeKey,node,publicNode,tra
         const value=scores.get(other)||{lexical:0,semantic:0,graph:0};value.graph=Math.max(value.graph,.08);scores.set(other,value);
       }
     }
-    const ranking=ranked().slice(0,limit);const records=ranking.map(value=>({...publicNode(allowed.get(value.id)),retrieval:{method,semantic:+value.semantic.toFixed(4),keyword:value.lexical>0,related:value.graph>0}}));
+    // Embedding awaits may span a correction/forget operation: revalidate before returning.
+    const currentAllowed=new Map(candidates(scope,options).filter(row=>(!options.status||options.status==='all'||row.status===options.status)&&(!options.person||row.subject_id===String(options.person))).map(row=>[row.id,row]));
+    const ranking=ranked().filter(value=>currentAllowed.has(value.id)&&indexText(currentAllowed.get(value.id)).toLowerCase()===textById.get(value.id)).slice(0,limit);
+    const records=ranking.map(value=>({...publicNode(currentAllowed.get(value.id)),retrieval:{method,semantic:+value.semantic.toFixed(4),keyword:value.lexical>0,related:value.graph>0}}));
     if(!options.quiet)metric(scope,'recall:'+method,now()-started,JSON.stringify(records).length);
     return {records,method,...(semanticError?{note:'本地语义暂不可用，本次保留关键词结果'}:{})};
   }

@@ -1,5 +1,7 @@
 import {recordTurnFailure,errorNoticeAllowed,failureRetryAt} from './turn-failure-policy.js';
 import { checkConsoleMemoryAccess } from './console-memory-access.js';
+import { createSelfLearning } from './self-learning.js';
+import { createMemeWiki } from './meme-wiki.js';
 // QQ ↔ DeepSeek Harness 桥接主程序。
 //
 // 链路：
@@ -39,6 +41,8 @@ import { storeGeneratedImage } from './generated-image-file.js';
 import { createImageKnowledge, IMAGE_CONTEXT_POLICY } from './image-knowledge.js';
 import { createMemoryTree } from './memory-tree.js';
 import { selectWakeContext } from './wake-context.js';
+import { buildPragmaticContext } from './pragmatic-signals.js';
+import { extractSlangQuery, internetDiscoveryPlan, buildInternetDiscoveryPrompt, parseInternetDiscoveryResult, isRecentSourceDate } from './slang-learner.js';
 import { createLocalEmbeddings } from './memory-embeddings.js';
 import { MEMORY_PATHS, handleMemoryRoute } from './memory-routes.js';
 import { isGifBuffer, gifToTiledPng } from './media/gif-frames.js';
@@ -416,6 +420,28 @@ function loadConfig() {
     // 不在这里显式接收的话，config.json 里写了 sessionTitles 也进不了内存（实测踩过：
     // 机制跑通了但别名不生效，名字退化成 SnowLuma 查到的真实昵称）。别名属于本机私有
     // 信息，刻意不进源码、只放 config.json（它不随分享包外发）。
+    // 自主学习区（2026-11-01 加）：loadConfig 逐段挑选，不在这里显式接收 config.json 里的段就进不了内存。
+    // 梗百科（2026-11-01 加）：loadConfig 逐段挑选，必须在这里显式接收。
+    memeWiki: {
+      enabled: true,
+      dbPath: 'data/memes.db',
+      maxHits: 2,
+      budget: 200,
+      troll: { enabled: false, level: 50, ...(file.memeWiki?.troll ?? {}) },
+      ...(file.memeWiki ?? {})
+    },
+    selfLearning: {
+      enabled: false,
+      mode: 'record',
+      enabledScopes: [],
+      dailyRounds: 2,
+      searchesPerRound: 2,
+      injectLimit: 1,
+      injectBudget: 120,
+      trialDays: 7,
+      retainMinUses: 5,
+      ...(file.selfLearning ?? {})
+    },
     sessionTitles: {
       enabled: true,
       withTime: true,
@@ -1062,6 +1088,50 @@ async function main() {
     // 角色名解耦（商品计划书 §7）：默认名只做兜底，实际以当前角色卡的 role 名为准，换角色不再写死「小鲸鱼」。
     botNames:()=>{let role='';try{role=String(readRoleState()?.role||'').trim();}catch{}return [...new Set([role||'小鲸鱼',selfNickname].filter(Boolean))];},
     onForgetGoals:(scope,ids)=>{const st=socialV2.conversations.get(scope);if(st?.innerLife?.goals){st.innerLife.goals=st.innerLife.goals.filter(goal=>!ids.includes(goal.id));saveSocialV2State();}} });
+  // ── 自主学习区（2026-11-01 加，默认关闭）─────────────────────────────────
+  // 独立表、独立状态机，只读写自己的记录；群友资料/事件/约定/系统经历/人设不受影响。
+  // 关闭时（cfg.selfLearning.enabled !== true）所有写入与注入动作一律拒绝。
+  const selfLearning = createSelfLearning({ file: path.join(STATE_DIR, 'memory-tree.sqlite'), scopeKey: key => String(key || ''), log });
+  // 启用范围：enabled=true 且（enabledScopes 为空=全部，或命中当前会话）。默认只开白名单会话。
+  // 梗百科：只读词库，打不开就降级（不影响桥启动）。
+  const memeWiki = createMemeWiki({ file: path.join(ROOT, cfg.memeWiki?.dbPath || 'data/memes.db'), log });
+  function memeWikiEnabled() { return cfg.memeWiki?.enabled !== false && memeWiki.available; }
+  function selfLearningEnabled(scope) {
+    if (cfg.selfLearning?.enabled !== true) return false;
+    const scopes = Array.isArray(cfg.selfLearning?.enabledScopes) ? cfg.selfLearning.enabledScopes.map(String) : [];
+    if (!scopes.length) return true;
+    return scopes.includes(String(scope || ''));
+  }
+  function selfLearningMode() { const mode = String(cfg.selfLearning?.mode || 'record'); return ['record','trial','auto'].includes(mode) ? mode : 'record'; }
+  function selfLearningGuard(scope) {
+    if (!selfLearningEnabled(scope)) {
+      const error = new Error('该会话未启用自主学习（config.selfLearning.enabled=false 或不在 enabledScopes 内）');
+      error.statusCode = 403;
+      throw error;
+    }
+    return selfLearningMode();
+  }
+  // 预算：每会话每天轮次与搜索次数由代码执行，不靠提示词自觉。
+  const selfLearningBudget = { day: '', rounds: new Map(), searches: new Map() };
+  function selfLearningBudgetState(key) {
+    const today = new Date().toISOString().slice(0, 10);
+    if (selfLearningBudget.day !== today) {
+      selfLearningBudget.day = today;
+      selfLearningBudget.rounds.clear();
+      selfLearningBudget.searches.clear();
+    }
+    return { rounds: selfLearningBudget.rounds.get(key) || 0, searches: selfLearningBudget.searches.get(key) || 0 };
+  }
+  function selfLearningClaimRound(key, searches = 0) {
+    const limits = { rounds: Math.max(0, Number(cfg.selfLearning?.dailyRounds ?? 2)), searches: Math.max(0, Number(cfg.selfLearning?.searchesPerRound ?? 2)) };
+    const used = selfLearningBudgetState(key);
+    if (limits.rounds > 0 && used.rounds >= limits.rounds) return { ok: false, code: 'budget', reason: '今日学习轮次已用完', limits, used };
+    const nextSearches = used.searches + Math.max(0, Number(searches) || 0);
+    if (limits.searches > 0 && nextSearches > limits.searches * limits.rounds) return { ok: false, code: 'budget', reason: '搜索次数超出预算', limits, used };
+    selfLearningBudget.rounds.set(key, used.rounds + 1);
+    selfLearningBudget.searches.set(key, nextSearches);
+    return { ok: true, limits, used: { rounds: used.rounds + 1, searches: nextSearches } };
+  }
   function rememberMedia(method,...args){try{return memoryTree[method](...args);}catch(error){log('图片结果已完成，但记忆留存失败：'+error.message);return null;}}
 
   // ── 管理员私聊本地执行（2026-10-20 加）────────────────────────────────────
@@ -2079,22 +2149,31 @@ async function main() {
 
   async function discoverInternetSlang() {
     if (cfg.slang?.enabled === false || cfg.slang?.autoResearch === false || !dshReady) return;
-    if (Date.now() - (Number(slangAuto.trendAt) || 0) < 24 * 60 * 60 * 1000 || !reserveSlangAuto()) return;
-    slangAuto.trendAt = Date.now(); atomicWriteJson(slangAutoFile, slangAuto);
+    const plan=internetDiscoveryPlan(slangAuto);
+    if(!plan.due)return;
+    slangAuto.trendDiscovery={...plan.state,attempts:plan.state.attempts+1,lastAttemptAt:Date.now()};
+    atomicWriteJson(slangAutoFile,slangAuto);
     try {
       const sessionId = await ensureSlangLearnerSession();
-      const prompt = '只使用 web_search 和 web_fetch 搜索近期公开中文网络流行梗。仅选择有公开来源、一般聊天可用的至多3个短词，不搜索任何聊天内容或个人信息，不执行本地操作。每个结果输出 JSON 数组元素 {content,meaning,usage,example,risk,sources:[来源URL],confirmed:true}；来源不足则不输出。仅返回 JSON。';
+      const prompt = buildInternetDiscoveryPrompt();
       const accepted = await api.sessions.prompt({sessionId, mode:'queue', content:[{type:'text',text:prompt}]});
-      if (!accepted.result.ok) return;
-      const results = parseResearchJson(await waitLearnerTurn(sessionId)).slice(0,3);
+      if (!accepted.result.ok) throw new Error('网络梗发现请求未被接受');
+      const results = parseInternetDiscoveryResult(await waitLearnerTurn(sessionId)).slice(0,3);
+      let added=0,valid=0;
       for (const item of results) {
         if (!item.confirmed || !item.meaning || !item.sources.some(s=>/^https?:\/\//i.test(s)) || !/^[\p{L}\p{N} _-]{2,24}$/u.test(item.content) || /\d{5}/.test(item.content)) continue;
-        if (slangEntries.some(e=>e.scope==='internet' && e.content===item.content)) continue;
-        const entry=createSlangEntry({content:item.content,meaning:item.meaning,usage:item.usage,example:item.example,risk:item.risk,sources:item.sources,scope:'internet'});
-        entry.sourceQuality='reported'; slangEntries.push(entry);
+        if(!isRecentSourceDate(item.publishedAt))continue;
+        valid++;
+        const existing=slangEntries.find(e=>e.scope==='internet' && e.content===item.content);
+        if(existing?.status===SLANG_STATUS.CONFIRMED||existing?.status===SLANG_STATUS.REJECTED)continue;
+        upsertSlangEntry(slangEntries,item.content,{meaning:item.meaning,usage:item.usage,example:item.example,risk:item.risk,sources:item.sources,publishedAt:item.publishedAt,scope:'internet',status:SLANG_STATUS.CANDIDATE,usagePolicy:'understand',sourceQuality:'reported',discoveredAt:new Date().toISOString(),expiresAt:new Date(Date.now()+30*86400000).toISOString(),countIncrement:0});
+        added++;
       }
+      if(results.length&&!valid)throw new Error('网络梗发现缺少有效公开来源或解释');
       saveSlangStore();
-    } catch (error) { log('网络热梗自动发现失败:', error?.message ?? error); }
+      slangAuto.trendAt=Date.now();slangAuto.trendDiscovery.lastSuccessAt=Date.now();slangAuto.trendDiscovery.lastError='';
+      atomicWriteJson(slangAutoFile,slangAuto);log(`网络梗发现完成：更新${added}条理解候选，不自动主动套用`);
+    } catch (error) { slangAuto.trendDiscovery.lastError=String(error?.message||error).slice(0,160);atomicWriteJson(slangAutoFile,slangAuto);log('网络热梗自动发现失败，一小时后可重试:', error?.message ?? error); }
   }
   setInterval(() => { if (dshReady) queueSlangTask(discoverInternetSlang); }, 15 * 60 * 1000).unref();
 
@@ -2174,7 +2253,7 @@ async function main() {
     const timeLine = `【当前时间】${now.toLocaleString('zh-CN', { hour12: false })}（${Intl.DateTimeFormat().resolvedOptions().timeZone}）`;
     const parts = [timeLine];
     if (cfg.slang?.enabled !== false) {
-      const block = buildSlangContext(slangEntries, cfg.slang?.injectMax ?? 8, {scope, query:promptText});
+      const block = buildSlangContext(slangEntries, Math.min(3,cfg.slang?.injectMax ?? 8), {scope, query:extractSlangQuery(promptText), relevantOnly:true});
       if (block) parts.push(block);
     }
     return parts.join('\n\n') + '\n\n' + promptText;
@@ -3024,6 +3103,94 @@ async function main() {
           }
           return;
         }
+        // ── 梗百科（2026-11-01 加）：面板查词条数、开关、现场试查 ────────────
+        if ((req.method === 'GET' || req.method === 'POST') && url.pathname === '/api/meme-wiki') {
+          try {
+            const body = req.method === 'POST' ? await readBody() : Object.fromEntries(url.searchParams.entries());
+            if (req.method === 'POST') {
+              // 开关与玩梗尺度都可改；改完立刻生效，不用重启。
+              const patch = {};
+              if (typeof body.enabled === 'boolean') patch.enabled = body.enabled;
+              if (body.troll && typeof body.troll === 'object') {
+                const troll = { ...(cfg.memeWiki?.troll || {}) };
+                if (typeof body.troll.enabled === 'boolean') troll.enabled = body.troll.enabled;
+                if (body.troll.level !== undefined) {
+                  const level = Number(body.troll.level);
+                  if (Number.isFinite(level)) troll.level = Math.max(0, Math.min(100, Math.round(level)));
+                }
+                patch.troll = troll;
+              }
+              if (Object.keys(patch).length) {
+                cfg.memeWiki = { ...(cfg.memeWiki || {}), ...patch };
+                try {
+                  const filePath = path.join(ROOT, 'config.json');
+                  const fileCfg = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+                  fileCfg.memeWiki = { ...(fileCfg.memeWiki || {}), ...patch };
+                  fs.writeFileSync(filePath, JSON.stringify(fileCfg, null, 2) + '\\n', 'utf8');
+                } catch (error) { log('梗百科配置写入失败：' + error.message); }
+                log('梗百科配置：' + JSON.stringify(patch));
+              }
+            }
+            const stats = memeWiki.stats();
+            let hits = null, query = '';
+            const q = String(body.q || url.searchParams.get('q') || '').trim();
+            if (q) { query = q; hits = memeWiki.search(q, 5); }
+            sendJson({ ok: true, enabled: cfg.memeWiki?.enabled !== false, available: stats.available, total: stats.total || 0, error: stats.error || null, troll: cfg.memeWiki?.troll || { enabled: false, level: 50 }, query, hits });
+          } catch (error) {
+            sendJson({ ok: false, error: String(error?.message ?? '梗百科操作失败') }, 400);
+          }
+          return;
+        }
+        // ── 自主学习区（2026-11-01 加）─────────────────────────────────────
+        // 复用控制台鉴权：GET 只读、写操作必须 POST，且不接受机器人会话令牌冒充控制台。
+        // 关闭时（cfg.selfLearning.enabled!==true）写操作一律 403，读操作仍可看空集。
+        if ((req.method === 'GET' || req.method === 'POST') && url.pathname === '/api/self-learning') {
+          try {
+            const body = req.method === 'POST' ? await readBody() : Object.fromEntries(url.searchParams.entries());
+            const action = String(body.action || 'overview');
+            checkConsoleMemoryAccess(req, action);
+            const key = String(body.key ?? url.searchParams.get('key') ?? '').trim();
+            const READ_ACTIONS = new Set(['list', 'read', 'overview', 'diagnostics', 'injection']);
+            if (!READ_ACTIONS.has(action)) selfLearningGuard(key);
+            const args = { ...body, scope: key };
+            let result;
+            switch (action) {
+              case 'list': result = selfLearning.list(args); break;
+              case 'read': result = selfLearning.read(args); break;
+              case 'overview': result = selfLearning.overview(args); break;
+              case 'diagnostics': result = selfLearning.diagnostics(args); break;
+              case 'injection': result = selfLearning.injection(args); break;
+              case 'collect': result = selfLearning.collect(args); break;
+              case 'revise': result = selfLearning.revise(args); break;
+              case 'start_trial': result = selfLearning.startTrial(args); break;
+              case 'review': result = selfLearning.review(args); break;
+              case 'retain': result = selfLearning.retain(args); break;
+              case 'pause': result = selfLearning.pause(args); break;
+              case 'archive': result = selfLearning.archive(args); break;
+              case 'restore': result = selfLearning.restore(args); break;
+              case 'reject': result = selfLearning.reject(args); break;
+              default: { const error = new Error('未知的自主学习动作'); error.statusCode = 400; throw error; }
+            }
+            sendJson({ ok: true, action, enabled: selfLearningEnabled(key), mode: selfLearningMode(), ...result });
+          } catch (error) {
+            sendJson({ ok: false, error: String(error?.message ?? '自主学习操作失败') }, error?.statusCode || 400);
+          }
+          return;
+        }
+        // ── 学习预算（工作轮次与搜索次数，服务端执行）────────────────────────
+        if (req.method === 'POST' && url.pathname === '/api/self-learning/budget') {
+          try {
+            const body = await readBody();
+            checkConsoleMemoryAccess(req, 'budget');
+            const key = String(body.key || '').trim();
+            selfLearningGuard(key);
+            const claimed = selfLearningClaimRound(key, body.searches);
+            sendJson({ ok: true, enabled: selfLearningEnabled(key), mode: selfLearningMode(), ...claimed });
+          } catch (error) {
+            sendJson({ ok: false, error: String(error?.message ?? '预算操作失败') }, error?.statusCode || 400);
+          }
+          return;
+        }
         // ── 手动发起表达回顾（2026-10-29 加）────────────────────────────────
         if (req.method === 'POST' && url.pathname === '/api/style-review/trigger') {
           if (req.headers['x-agent-token'] !== undefined) { sendJson({ok:false,error:'手动回顾仅限控制台'},403); return; }
@@ -3197,8 +3364,18 @@ async function main() {
         if (req.method === 'GET' && url.pathname === '/api/slang') {
           const status = url.searchParams.get('status') || '';
           const list = status ? slangEntries.filter((e) => e.status === status) : slangEntries;
-          sendJson({ entries: list, config: cfg.slang });
+          sendJson({ entries: list, config: cfg.slang, discovery:internetDiscoveryPlan(slangAuto) });
           return;
+        }
+        if (req.method === 'POST' && url.pathname === '/api/slang/discover') {
+          if(Object.prototype.hasOwnProperty.call(req.headers,'x-agent-token')){sendJson({ok:false,error:'仅管理端可触发公开网络发现'},403);return;}
+          const body=await readBody();
+          if(body.publicOnly!==true){sendJson({ok:false,error:'请明确仅使用公开网络来源'},400);return;}
+          if(cfg.slang?.enabled===false||cfg.slang?.autoResearch===false||!dshReady){sendJson({ok:false,error:'网络发现当前不可用'},409);return;}
+          const plan=internetDiscoveryPlan(slangAuto);
+          if(!plan.due){sendJson({ok:true,queued:false,discovery:plan});return;}
+          queueSlangTask(discoverInternetSlang);
+          sendJson({ok:true,queued:true,source:'public_web'});return;
         }
         if (req.method === 'POST' && url.pathname === '/api/slang') {
           const body = await readBody();
@@ -6445,7 +6622,7 @@ async function main() {
           return;
         }
         if (MEMORY_PATHS.has(url.pathname)) {
-          await handleMemoryRoute({req,url,readBody,sendJson,tree:memoryTree,getState:getSocialV2State,
+          await handleMemoryRoute({req,url,readBody,sendJson,tree:memoryTree,getState:getSocialV2State,learning:selfLearning,learningGuard:selfLearningGuard,learningEnabled:selfLearningEnabled,learningMode:selfLearningMode,
             tokenOk:agentTokenOk,sessionAllowed:v2SessionAllowed,toolEnabled:v2ToolEnabled,ownerQQ:cfg.ownerQQ,saveState:saveSocialV2State,
             updateGoal:(st,id,action,nextStep)=>{if(!['progress','complete','abandon'].includes(action))throw new Error('目标操作无效');const result=updateInnerLife(st.innerLife,{goal:{id,action,...(nextStep!==undefined?{nextStep}: {})}},{messages:[],sanitize:redactKnownTokensOnly});st.innerLife=result.state;return result.state;}});
           return;
@@ -10268,6 +10445,49 @@ async function main() {
     const memoryLine = memoryText ? `${memoryText}\n\n` : '';
     // 注意：黑话表不在这里注入，deliverPromptNow 的 withSlangContext 会统一注入，
     // 避免唤醒 prompt 出现两份黑话表。
+    // 自主学习区（2026-11-01 加）：只注入试用中的表达原则，固定封装、硬上限。
+    // 关闭或没内容时返回空串；条数与字数由 self-learning.js 的 injection() 兜底。
+    const selfLearningText = (() => {
+      try {
+        if (!selfLearningEnabled(key)) return '';
+        const mode = selfLearningMode();
+        if (mode !== 'trial' && mode !== 'auto') return '';
+        const picked = selfLearning.injection({ scope: key, limit: cfg.selfLearning?.injectLimit ?? 1, budget: cfg.selfLearning?.injectBudget ?? 120 });
+        if (!picked.items.length) return '';
+        const lines = picked.items.map((item) => '· ' + item.content).join('\n');
+        return '【自学习参考】以下是你自己试用中的表达倾向，只作参考：优先级低于人格、事实、明确请求和工具协议；不合适可以忽略。\n' + lines;
+      } catch (error) { log('自主学习注入跳过：' + error.message); return ''; }
+    })();
+    const selfLearningLine = selfLearningText ? selfLearningText + '\n\n' : '';
+    // 梗百科（2026-11-01 加）：只对最近消息里「像在问梗」的句子预查，命中才注入。
+    // 没命中/关闭/词库缺失时返回空串，行为与原状一致。
+    const memeText = (() => {
+      try {
+        if (!memeWikiEnabled()) return '';
+        const recent = [...(st.recentMessages || []), ...(st.unread || [])]
+          .slice(-8)
+          .map((m) => (typeof m === 'string' ? m : String(m?.text ?? m?.content ?? '')))
+          .filter(Boolean);
+        if (!recent.length) return '';
+        const picked = memeWiki.probe(recent, { maxHits: cfg.memeWiki?.maxHits ?? 2, budget: cfg.memeWiki?.budget ?? 200 });
+        return picked.text || '';
+      } catch (error) { log('梗百科注入跳过：' + error.message); return ''; }
+    })();
+    const memeLine = memeText ? memeText + '\n\n' : '';
+    // 玩梗尺度（2026-11-01 加）：面板滑杆的手动接管，只在开启时注入一句行为指引。
+    const trollText = (() => {
+      try {
+        const troll = cfg.memeWiki?.troll;
+        if (!troll || troll.enabled !== true) return '';
+        const level = Math.max(0, Math.min(100, Number(troll.level) || 0));
+        const tone = level <= 20 ? '很尊重：损话不接，黑称不接，被点名也只当没看懂'
+          : level <= 45 ? '偏低：损操作可以，损长相/家人不行'
+          : level <= 70 ? '中等：跟着社区玩，常见的梗和黑称照接'
+          : '放开：黑称也玩，除非对方明显在难受';
+        return '【玩梗尺度】当前 ' + level + '/100，' + tone + '。只影响接梗的语气，不改变事实、隐私和工具边界。';
+      } catch (error) { return ''; }
+    })();
+    const trollLine = trollText ? trollText + '\n\n' : '';
     const participationText = formatParticipationV2(st);
     const participationLine = participationText ? `${participationText}\n\n` : '';
     // 小鲸鱼的完整角色卡和固定规矩已包含这两段要求，不再重复注入。
@@ -10311,7 +10531,7 @@ async function main() {
     const wakeLine = `【当前唤醒】${wcMode}，${wcTime}${wcTriggers.length ? `；触发：${wcTriggers.join('/')}` : ''}\n\n`;
     const attackLine = attackMode.promptBlock(key);
     const screenLine = screenWatch.promptBlock();
-    const base = attackLine + roleLine + tokenLine + antiAiLine + proactiveLine + stickerLine + preSleepLine + statusLine + wakeLine + screenLine + memoryLine + participationLine + innerLine + buildAgentPrivilegeLine(key);
+    const base = attackLine + roleLine + tokenLine + antiAiLine + proactiveLine + stickerLine + preSleepLine + statusLine + wakeLine + screenLine + memoryLine + participationLine + innerLine + selfLearningLine + memeLine + trollLine + buildAgentPrivilegeLine(key);
     if (reason === 'bootstrap') {
       return `${base}【引导唤醒】你已接入 QQ 会话 ${key}。\n当前是二代仿真模式：你的文本输出不会自动发送到 QQ，所有发言必须通过工具完成。\n请先调用 qq_get_prompt 查看你的角色、推荐值、可用工具和当前状态，然后用 qq_set_wake_config 设置你希望如何被唤醒。`;
     }
@@ -10511,6 +10731,7 @@ async function main() {
     const isHandledMsg = (m) => isMessageConfirmed(st,Number(m.seq));
     const freshUnread = unread.filter((m) => !isHandledMsg(m));
     const doneUnread = unread.filter(isHandledMsg);
+    const pragmaticBlock = buildPragmaticContext(freshUnread);
     const snapshotAt = new Date().toLocaleTimeString('zh-CN', { hour12: false });
     const parts = [];
     if (recent.length) {
@@ -10523,7 +10744,7 @@ async function main() {
       parts.push(`【你已经处理过的】下面这些消息在上一轮就已经交给你了、而且你已经回过（或已决定不回），它们只是还挂在未读里：\n${doneUnread.map(fmt).join('\n')}\n⚠️ 不要为了它们再回答一遍。如果你判断上一轮确实漏了某一条、现在该补，就只补那一条，别把整批重答。`);
     }
     if (!parts.length) return customBlock + r18Block;
-    return `${customBlock}${r18Block}${parts.join('\n\n')}\n（上面的消息已经给你了，不需要再为"看消息"调用 qq_get_unread_messages / qq_get_recent_messages / qq_social_state；要引用某条请用它的 #消息id。这段清单是 ${snapshotAt} 的快照，如果它排队了一阵子才交给你，先用 qq_get_unread_messages 复核有没有更新的消息，别把已经答过的当成新的。）\n${IMAGE_CONTEXT_POLICY}\n\n`;
+    return `${customBlock}${r18Block}${parts.join('\n\n')}\n（上面的消息已经给你了，不需要再为"看消息"调用 qq_get_unread_messages / qq_get_recent_messages / qq_social_state；要引用某条请用它的 #消息id。这段清单是 ${snapshotAt} 的快照，如果它排队了一阵子才交给你，先用 qq_get_unread_messages 复核有没有更新的消息，别把已经答过的当成新的。）\n${IMAGE_CONTEXT_POLICY}\n${pragmaticBlock}\n`;
   }
 
   function extractPromptMessagesV2(st,text) {
