@@ -48,3 +48,6 @@ bridge/wechatauto_logs/
 
 # 管理员本机确认的自身形象图库配置
 bridge/self-identity.json
+
+# 梗百科词库是静态数据（16.7MB），不是运行态，要随包分发
+!bridge/data/memes.db
