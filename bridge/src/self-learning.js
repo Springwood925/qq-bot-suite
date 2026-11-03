@@ -126,7 +126,8 @@ export function createSelfLearning({ db, file, now = () => Date.now(), scopeKey 
   // node:sqlite 没有 better-sqlite3 的 db.transaction，这里用 savepoint 实现嵌套事务。
   let transactionDepth = 0, savepointId = 0;
   function transaction(fn) {
-    const nested = transactionDepth > 0, name = 'self_learning_' + (++savepointId);
+    // SAVEPOINT also works when the caller owns the outer transaction.
+    const nested = true, name = 'self_learning_' + (++savepointId);
     db.exec(nested ? 'SAVEPOINT ' + name : 'BEGIN IMMEDIATE');
     transactionDepth++;
     try {

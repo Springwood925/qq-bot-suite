@@ -1,6 +1,19 @@
 # 更新记录
 
+## 1.1.5
+
+- **MiniMax 语音**：新增 `bridge/src/tts-minimax.js`，`tts.provider = minimax` 时走 MiniMax T2A v2（支持音色克隆的 `voice_id`），失败自动回落 DashScope。MiniMax 返回的 wav 头是坏的（RIFF size 0x7FFFFFFF、blockAlign 0），用 ffmpeg 重新封装成标准 PCM 再落盘，修掉「放出来语速变快」的问题。
+- **拟人：语料本 + 语感**（新增四模块）：`novel-dialogue.js`（从小说摘「人怎么接话」，注入带声明「虚构示例、只借鉴承接方式、优先级低于本轮人格与事实」，四道不注入过滤：严肃任务 / 求助 / 正在和好 / 重逢）· `corpus-dialogue.js`（对话语料 + 向量检索，按当前对话找相似接法）· `learning-cycle.js` + `learning-runner.js`（表达学习三档 `record`/`review`/`auto`，后台只搜公开网页）。数据文件 `dialogue-corpus*.json`、`novel-dialogue.json`。
+- **全局成长教学层**：新增 `global-growth.js`。白名单教学者在任意会话发「全局教学：表达/知识/方法：原文」即入库，共享给各会话按需注入；原始来源仅管理端可见，遗忘有墓碑防重放。数据在 `state/memory-tree.sqlite` 的 `growth_*` 四表。
+- **capabilities 八类能力系统**（新增 `bridge/src/capabilities/`）：growth 成长 / groupCulture 群文化 / activity 活动 / presence 在场 / speech 说话 / recreation 复读 / transfer 转述 / voice 语音。总开关 + dryRun，状态在 `state/capabilities.db`，管理端走 `/api/capabilities`。
+- **Minecraft 联机 bot**（配合外部 `mc-bot` 进程）：`qq_mc` 扩到 **34 个动作**——移动（`goto`/`come`/`follow`/`stop`）· 采集（`dig`/`findBlock`/`findBlockAll`/`inventory`）· 建造（`place`/`placeNear`/`build`）· 合成（`craft`/`craftable`/`useBlock`）· 观察（`map` 字符地表图 / `height` 高度图 / `scan` 方块统计）· 连串（`sequence` 最多 64 步）· 说话（`say`/`reply` 发 QQ，`chat` 发游戏公屏）· 自主（`selfPlay`/`auto`/`idle`）。桥新增 `/api/mc/*` 一组端点（含事件驱动唤醒 `/api/mc/event`）。
+- **`mcp-snowluma-safe.js`**：`qq_mc` 动作与参数（`radius`/`step`/`width`/`height`/`depth`/`hollow`/`steps`/`op`/`message`）同步补齐 —— 只改服务端不改工具定义会导致「定义了但调不到 / 调得到但服务端不认」。
+- **记忆管理面板**：`/api/memory-admin` 支持按「级别 + 状态」筛选、查看来源、确认、归档；`list` 支持 `level` 参数。
+- **`slang-usage.js`**：黑话使用频次索引（`data/slang-usage-index.json`）。
+- **打包脚本**：新增打包后自动脱敏（`group:<数字群号>` → `group:<redacted>`），只改分享副本、不碰源文件。
+
 ## 0.3.6
+
 
 - **记忆分级 L0~L3**：记忆节点新增 `memory_level / importance / evidence_strength / review_due_at / retention_policy` 五个字段；启动时自动检测并 ALTER 补列，再按类型与证据等级保守回填（提取类 L0、事件类 L1、稳定类 L2；推断/玩笑证据从 L2 降回 L1；**L3 核心不自动升**，留给管理员指定）。注入按级别排序，L0 临时记忆把预算让给 L2/L3。
 - **学习三档**：设置项 `styleLearningMode` = `record`（仅记录，候选不进上下文）/ `review`（候选待人确认，默认）/ `auto`（仅 `length`/`splitting` 两类低风险维度直接生效）。
