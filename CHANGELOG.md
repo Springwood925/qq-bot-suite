@@ -1,5 +1,13 @@
 # 更新记录
 
+## 1.1.6
+
+- 插件新增项目总览与 Minecraft 页面，展示连接、计划、装备、背包及可验证的自主游玩开关。
+- 加入可独立配置的 Minecraft 机器人源代码，以及语音通话服务源代码；运行数据和模型需自行准备。
+- 修复 1.12 木门状态与路径点、矿道下行、农耕取水及工具选择；新增 Minecraft 自主回合与主人私聊的协调保护。
+- 熔炉操作提供单步使用及 sequence 步骤，提供边界校验并避免未确认时继续执行。
+- 支持会话上下文续接、历史地点核实和本地游戏知识参考；修正多个隐私及可移植性问题。
+
 ## 1.1.5
 
 - **MiniMax 语音**：新增 `bridge/src/tts-minimax.js`，`tts.provider = minimax` 时走 MiniMax T2A v2（支持音色克隆的 `voice_id`），失败自动回落 DashScope。MiniMax 返回的 wav 头是坏的（RIFF size 0x7FFFFFFF、blockAlign 0），用 ffmpeg 重新封装成标准 PCM 再落盘，修掉「放出来语速变快」的问题。

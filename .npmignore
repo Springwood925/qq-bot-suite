@@ -18,3 +18,13 @@ bridge/wechatauto_logs/
 
 # 管理员本机确认的自身形象图库配置
 bridge/self-identity.json
+# Local runtime data, accounts and caches
+minecraft/config.json
+minecraft/home.json
+voice/voice-cache/
+voice/audio-runtime/
+voice/dependencies/
+voice/dsh-call-session.json
+voice/dsh-call-sessions.jsonl
+voice/__pycache__/
+!bridge/data/memes.db

@@ -163,8 +163,8 @@ export function formatInnerLife(raw, { messages = [], now = Date.now(), compact 
   return lines.join('\n');
 }
 
-export function canInitiateInnerLife(raw, { lastIncomingAt = 0, lastAiReplyAt = 0, now = Date.now() } = {}) {
+export function canInitiateInnerLife(raw, { lastIncomingAt = 0, lastAiReplyAt = 0, now = Date.now(), unansweredRetryMs = 0 } = {}) {
   // 上次主动说话还没有人接，停止下一次冷场冒泡；直接消息的唤醒不受影响。
-  if (lastAiReplyAt > 0 && lastAiReplyAt >= lastIncomingAt) return false;
+  if (lastAiReplyAt > 0 && lastAiReplyAt >= lastIncomingAt && !(unansweredRetryMs > 0 && now - lastAiReplyAt >= unansweredRetryMs)) return false;
   return normalizeInnerLife(raw, now).affect.energy >= 25;
 }

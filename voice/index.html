@@ -1,0 +1,18 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>小鲸鱼 · 语音通话</title>
+<style>body{font:16px system-ui;background:#101922;color:#e2f7f2;max-width:720px;margin:40px auto;padding:0 20px}button,select{font:inherit;padding:10px;border-radius:8px;background:#223a43;color:inherit;border:1px solid #4bc4b1}select{width:100%;margin:8px 0 18px}button{cursor:pointer;margin:4px}#status{color:#65dbc8}#log{white-space:pre-wrap;line-height:1.8;max-height:300px;overflow:auto}small{color:#a8bec3}</style>
+<h1>小鲸鱼 · 语音通话</h1><p>通话接通后自动收听，挂断后自动停止。控制台可以关闭。</p>
+<p><small>语音在本机识别，文字发送至已配置的对话和语音合成服务；合成音频缓存在本机。</small></p>
+<label>接收声音（输入）<select id="input"></select></label><label>小鲸鱼说话（输出）<select id="output"></select></label>
+<label>声音阈值 <input id="threshold" type="range" min="0.005" max="0.12" step="0.005" value="0.025"><span id="thresholdValue">0.025</span></label>
+<p><button id="refresh">刷新设备</button><button id="save">保存设备设置</button><button id="start">恢复监听</button><button id="stop">暂停监听</button><button id="interrupt">打断</button></p>
+<p id="status" role="status">连接通话服务中…</p><div id="log" aria-live="polite"></div>
+<script type="module">
+const $=id=>document.getElementById(id),token=location.hash.slice(1)||sessionStorage.getItem('call-token')||'';if(token)sessionStorage.setItem('call-token',token);history.replaceState(null,'',location.pathname);
+let closed=false,busy=false,devicesSignature='';
+async function request(url,options={}){const r=await fetch(url,{...options,headers:{'x-call-token':token,...options.headers}});if(!r.ok){let e=await r.json().catch(()=>({}));throw Error(e.error||'请求失败')}return r.json();}
+function options(select,names,current){select.replaceChildren();for(const name of names){const option=document.createElement('option');option.value=name;option.textContent=name;select.append(option);}const match=names.find(x=>x===current)||names.find(x=>x.startsWith(current));if(match)select.value=match;}
+async function refresh(){if(closed||busy)return;try{const state=await request('/audio-state');if(closed)return;$('status').textContent=state.phase||'等待 QQ 语音通话';$('log').textContent=(state.log||[]).map(x=>x.who+'：'+x.text).join('\n');const d=state.devices||{},signature=JSON.stringify([d.inputs,d.outputs,d.input,d.output,d.threshold]);if(signature!==devicesSignature&&document.activeElement!==$('input')&&document.activeElement!==$('output')&&document.activeElement!==$('threshold')){devicesSignature=signature;options($('input'),d.inputs||[],d.input||'');options($('output'),d.outputs||[],d.output||'');$('threshold').value=d.threshold??.025;$('thresholdValue').textContent=$('threshold').value;}$('start').disabled=!state.paused||state.callState!=='active';$('stop').disabled=state.paused||state.callState!=='active';$('interrupt').disabled=state.callState!=='active';$('save').disabled=state.callState==='active';}catch(e){if(!closed)$('status').textContent='通话服务连接失败：'+e.message}}
+async function control(action,values={}){busy=true;try{await request('/audio-control',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action,...values})});}catch(e){$('status').textContent='操作失败：'+e.message;return;}finally{busy=false}await refresh();}
+$('refresh').onclick=()=>control('devices');$('save').onclick=()=>control('configure',{input:$('input').value,output:$('output').value,threshold:Number($('threshold').value)});$('start').onclick=()=>control('start');$('stop').onclick=()=>control('stop');$('interrupt').onclick=()=>control('interrupt');$('threshold').oninput=()=>{$('thresholdValue').textContent=$('threshold').value};
+const timer=setInterval(()=>{void refresh()},1000);void refresh();
+</script></html>

@@ -1,4 +1,11 @@
 import {recordTurnFailure,errorNoticeAllowed,failureRetryAt} from './turn-failure-policy.js';
+import {buildPlayPrompt,parsePlayResult} from './mc-play-plan.mjs';
+import {selectMcKnowledge} from './mc-knowledge.mjs';
+import {sharedMcContext,knownMine} from './mc-shared-context.mjs';
+import {ownerDialogue} from './mc-owner-dialogue.mjs';
+import {readManualMode,writeManualMode} from './mc-mode-state.mjs';
+import {contextState,shouldRotate,handoffPrompt,prepareRotation,resumePrompt} from './mc-context.mjs';
+import {ownerHasPriority} from './mc-turn-coordination.mjs';
 import { checkConsoleMemoryAccess } from './console-memory-access.js';
 import { createLearningCycle } from './learning-cycle.js';
 import { createLearningRunner } from './learning-runner.js';
@@ -1204,6 +1211,10 @@ async function main() {
   const learnerSessions = new Set();    // sessionId -> 学习会话（不映射 QQ，不发送）
   let mcSessionId = null;                                   // Minecraft 决策会话
   const MC_SESSION_FILE = path.join(STATE_DIR, 'mc-session.json');
+  const MC_HANDOFF_FILE = path.join(STATE_DIR, 'mc-context-handoff.json');
+  let mcResumePending = false;
+  let mcRotateRetryAt = 0;
+  let mcHandoffInFlight = false;
   let mcAskQueue = Promise.resolve();
   const mcWakeGuard = { at: 0, skipped: 0 };   // 游戏事件唤醒节流                       // 串行化，避免多轮并发
   const learnerCollectors = new Map();  // sessionId -> turn collector
@@ -1354,7 +1365,10 @@ async function main() {
     // 2026-10-02：先定"走哪条路"，再决定群/私聊要不要拦 ——
     // 百炼（dashscope）是我们自己合成音频、再当**通用 record 段**发出去，私聊能发；
     // QQ 自带的 send_group_ai_record 没有私聊版，所以只有它必须限制成群。
-    if (String(ttsCfg.provider || 'qq-ai').toLowerCase() === 'dashscope') {
+    const ttsProvider = String(ttsCfg.provider || 'qq-ai').toLowerCase();
+    const hasMinimaxKey = Boolean(String(ttsCfg.minimax?.apiKey || '').trim());
+    // 2026-11-04：昨天接 MiniMax 时这一处只认 dashscope —— provider=minimax 会掉回 QQ 自带 AI 语音，私聊直接报错
+    if (ttsProvider === 'dashscope' || ttsProvider === 'minimax' || hasMinimaxKey) {
       if ((kind !== 'group' && kind !== 'private') || !/^\d+$/.test(String(id))) {
         throw new Error('语音只支持 group:群号 或 private:QQ号');
       }
@@ -2086,6 +2100,7 @@ async function main() {
     const saved = readJsonSafe(MC_SESSION_FILE, null);
     if (saved?.sessionId) {
       mcSessionId = String(saved.sessionId);
+      mcResumePending = saved.resumePending === true;
       learnerSessions.add(mcSessionId);
       api.events.follow(mcSessionId);
       await ensureChatModel(mcSessionId);
@@ -2128,11 +2143,8 @@ async function main() {
 
   // 叫醒她自己去玩一回合（不等结果）
   async function kickMcSession(promptText) {
-    const sessionId = await ensureMcSession();
-    const accepted = await api.sessions.prompt({ sessionId, mode: 'queue', content: [{ type: 'text', text: promptText }] });
-    if (!accepted.result.ok) {
-      throw new Error('叫醒失败：' + accepted.result.error.code + ' ' + accepted.result.error.message);
-    }
+    // 所有游戏回合共享队列；事件请求及时返回，实际执行或失败写入日志。
+    void askMcDecision(promptText, 180000, {autonomous:true}).catch(error => log('游戏事件回合失败：'+String(error?.message ?? error)));
     return true;
   }
 
@@ -2187,6 +2199,16 @@ async function main() {
   // 定时叫醒（只在 bot 在线时）
   let mcTickTimer = null;
   let mcTickBusy = false;
+  let ownerMcPriorityUntil = 0;
+  let pendingMcEvent = null;
+  const MC_PLAN_FILE = path.join(STATE_DIR, 'mc-play-plan.json');
+  let mcPlan = readJsonSafe(MC_PLAN_FILE, null);
+  function renderMcEvent(body) {
+    const reasons = Array.isArray(body.reasons) ? body.reasons : [];
+    const events = Array.isArray(body.events) ? body.events : [];
+    return ['【游戏里发生的事】', '触发：'+reasons.join(' / '), ...events.slice(-8).map(e=>'· '+String(e.text || '').slice(0,200)),
+      '这是刚观察到的游戏事件。结合实际情况决定怎么回应；需要说话时使用 qq_mc 的 say 或 reply 发到 QQ，未经确认不要声称行动成功。'].join('\n');
+  }
   function scheduleMcTick() {
     if (mcTickTimer) return;
     const interval = Number(cfg.minecraft?.tickIntervalMs) || 180000;
@@ -2195,33 +2217,126 @@ async function main() {
       if (mcTickBusy) return;
       if (!gameModeOn()) return;
       if (!dshReady) return;
+      if (!mcGameState.online || Date.now()-mcGameState.at >= 180000) return;
+      if ((mcWakeGuard.at && Date.now()-mcWakeGuard.at < 20000) || (mcSessionId && learnerCollectors.has(mcSessionId))) return;
       mcTickBusy = true;
       try {
         const snapshot = { online: mcGameState.online, reason: mcGameState.reason };
+        snapshot.recordedMine = knownMine(readJsonSafe(path.join(STATE_DIR,'mc-home-context.json'),null));
+        if (cfg.ownerQQ) snapshot.ownerConversation = ownerDialogue(getSocialV2State(ownerPrivateKey()).recentMessages, {owner:cfg.ownerQQ,isSensitive:text=>SENSITIVE_RE.test(text),sanitize:redactKnownTokensOnly});
         // 顺带取一下真实状态（拿不到就只告诉她在线）
         try {
           const r = await fetch('http://127.0.0.1:' + (Number(cfg.minecraft?.port) || 63200) + '/api/mc/status', { signal: AbortSignal.timeout(4000) });
-          if (r.ok) Object.assign(snapshot, await r.json());
-        } catch {}
-        await kickMcSession(buildMcTickPrompt(snapshot));
-        rememberMcSelf({ what: '被叫醒自己玩了一会儿', note: 'snapshot: ' + JSON.stringify(snapshot.pos || null) });
-        appendActivity('Minecraft：叫醒游戏会话自己玩');
+          if (!r.ok) throw Error('游戏状态不可用');
+          Object.assign(snapshot, await r.json());
+        } catch { return; }
+        try {
+          const r=await fetch('http://127.0.0.1:'+(Number(cfg.minecraft?.port)||63200)+'/api/mc/inventory',{method:'POST',headers:{'content-type':'application/json'},body:'{}',signal:AbortSignal.timeout(4000)});
+          if(r.ok){const inventory=await r.json();if(inventory.ok && Array.isArray(inventory.items))snapshot.inventoryObservation={at:Date.now(),items:inventory.items.slice(0,40).map(i=>({name:i.name,count:i.count,metadata:i.metadata,...(i.registryName?{registryName:i.registryName}:{})}))};}
+        } catch { /* 状态快照缺少库存时由模型另行查询，不阻断回合 */ }
+        const output = await askMcDecision(buildPlayPrompt(snapshot, mcPlan), 180000, {autonomous:true});
+        const plan = parsePlayResult(output,mcPlan);
+        if (plan) { mcPlan = {...plan, updatedAt:Date.now()}; atomicWriteJson(MC_PLAN_FILE, mcPlan); appendActivity('Minecraft：自主任务进度已更新'); }
+        else log('Minecraft 自主回合没有有效进度摘要，保留上次记录');
       } catch (error) {
         log('游戏会话叫醒失败：' + String(error?.message ?? error));
       } finally {
         mcTickBusy = false;
+        if (pendingMcEvent) {
+          const event = pendingMcEvent; pendingMcEvent = null;
+          try { await kickMcSession(renderMcEvent(event)); appendActivity('Minecraft：处理自主任务期间的游戏事件'); }
+          catch (error) { log('游戏事件唤醒失败：'+String(error?.message ?? error)); }
+        }
       }
     }, interval);
   }
 
   // 问它一句，等它回
-  function askMcDecision(promptText, timeoutMs = 60000) {
+  async function maybeRotateMcSession(sessionId) {
+    const threshold = cfg.minecraft?.contextRotateTokens === undefined ? 80000 : Number(cfg.minecraft.contextRotateTokens);
+    const context = contextState(sessionId);
+    const tokens = context?.tokens;
+    const busy = !context || context.busy || learnerCollectors.has(sessionId) || learnerWaiters.has(sessionId);
+    if (!shouldRotate({tokens, threshold, busy, retryAt:mcRotateRetryAt})) return sessionId;
+    // 摘要成功并落盘前绝不切换；旧会话始终保留，可追溯。
+    try {
+      const previous=readJsonSafe(MC_HANDOFF_FILE,null);
+      const next=await prepareRotation({oldId:sessionId,plan:mcPlan,previousHandoff:previous?.sessionId===sessionId ? previous.handoff : null,
+        summarize:async()=>{
+          const accepted=await api.sessions.prompt({sessionId,mode:'queue',content:[{type:'text',text:handoffPrompt}]});
+          if (!accepted.result.ok) throw Error('交接摘要请求被拒');
+          mcHandoffInFlight=true;
+          try { return await waitLearnerTurn(sessionId,180000); }
+          finally { mcHandoffInFlight=false; }
+        },
+        createSession:async()=>{
+          const dir=path.join(STATE_DIR,'mc-agent');fs.mkdirSync(dir,{recursive:true});
+          const ws=unwrap(await api.workspace.create({path:dir}),'mc workspace.create');
+          const params={workspaceId:ws.workspace.workspaceId};
+          const preset=cfg.minecraft?.agentPreset || cfg.agentPreset || undefined;
+          if (preset) params.agentPreset=preset;
+          const id=unwrap(await api.sessions.create(params),'mc session.create').sessionId;
+          if (!id || id===sessionId) throw Error('新会话无效');
+          learnerSessions.add(id);api.events.follow(id);await ensureChatModel(id);
+          return id;
+        },
+        saveHandoff:value=>atomicWriteJson(MC_HANDOFF_FILE,value),
+        saveSession:value=>atomicWriteJson(MC_SESSION_FILE,value)
+      });
+      mcSessionId=next;mcResumePending=true;
+      learnerSessions.delete(sessionId);
+      log(`Minecraft 会话上下文轮换完成（约 ${tokens} token），旧会话保留`);
+      return next;
+    } catch(error) {
+      mcRotateRetryAt=Date.now()+300000;
+      log('Minecraft 会话交接失败，保留旧会话：'+String(error?.message ?? error));
+      // 摘要回合可能仍在执行或排队，不能贸然向同一会话继续提交。
+      throw error;
+    }
+  }
+
+  function ownerMcBusy() {
+    const key=ownerPrivateKey();if(!key)return false;
+    const st=getSocialV2State(key),q=promptQueues.get(key),sid=state.sessions[key];
+    const context=sid?contextState(sid):null,execution=normalizeWakeDelivery(st).execution;
+    return ownerHasPriority({priorityUntil:ownerMcPriorityUntil,queueRunning:!!q?.running,queueLength:q?.queue?.length||0,pendingTimer:!!st?.pendingWakeTimer,contextBusy:context?.busy??null,execution,lastReplyAt:st?.lastAiReplyAt});
+  }
+  async function waitForOwnerMcTurn() {
+    const deadline=Date.now()+180000;
+    while(ownerMcBusy()) {
+      if(!gameModeOn())throw Error('自主游玩已暂停');
+      if(Date.now()>deadline)throw Error('主人会话仍在进行，游戏回合留待稍后');
+      await new Promise(resolve=>setTimeout(resolve,500));
+    }
+  }
+  function askMcDecision(promptText, timeoutMs = 60000, {autonomous=false} = {}) {
     // 串行化：上一次没答完，这一次排队
     const run = async () => {
-      const sessionId = await ensureMcSession();
-      const accepted = await api.sessions.prompt({ sessionId, mode: 'queue', content: [{ type: 'text', text: promptText }] });
+      if(autonomous && !gameModeOn())throw Error('自主游玩已暂停');
+      await waitForOwnerMcTurn();
+      if(autonomous && !gameModeOn())throw Error('自主游玩已暂停');
+      let sessionId = await ensureMcSession();
+      if (mcHandoffInFlight) throw Error('等待上次游戏交接回合结束');
+      sessionId = await maybeRotateMcSession(sessionId);
+      let content = promptText;
+      if (mcResumePending) {
+        const saved=readJsonSafe(MC_HANDOFF_FILE,null);
+        if (!saved || saved.sessionId!==sessionId || !saved.handoff) throw Error('游戏交接摘要缺失，暂停以免丢失任务');
+        content=resumePrompt(saved.handoff,saved.plan,promptText);
+      }
+      const mcPersona = readCustomPrompt().split('## 情绪、兴趣和连续性')[0];
+      if (mcPersona) content = '【角色与表达参考】以下人格适用于游戏交流；QQ 专属发送流程不适用于游戏决策，工具结果和当前任务优先。\n' + mcPersona + '\n\n' + content;
+      content = '【本回合节奏】只处理眼前一件事，做少量必要的工具操作后及时结束；卡住或失败时不要在同一回合反复尝试，可以简短说明并留给后续回合。若后文要求 JSON，按要求输出已确认进度。\n\n' + content;
+      await waitForOwnerMcTurn();
+      if(autonomous && !gameModeOn())throw Error('自主游玩已暂停');
+      const accepted = await api.sessions.prompt({ sessionId, mode: 'queue', content: [{ type: 'text', text: content }] });
       if (!accepted.result.ok) {
         throw new Error('决策被拒：' + accepted.result.error.code + ' ' + accepted.result.error.message);
+      }
+      if (mcResumePending) {
+        const saved=readJsonSafe(MC_SESSION_FILE,{});
+        atomicWriteJson(MC_SESSION_FILE,{...saved,sessionId,resumePending:false});
+        mcResumePending=false;
       }
       const waiter = waitLearnerTurn(sessionId, timeoutMs);
       return waiter;
@@ -2231,8 +2346,21 @@ async function main() {
     return chained;
   }
 
+  function compactMcSession() {
+    const run=async()=>{
+      const before=await ensureMcSession();
+      if (mcHandoffInFlight) throw Error('等待上次游戏交接回合结束');
+      const after=await maybeRotateMcSession(before);
+      return {rotated:after!==before,context:contextState(after)};
+    };
+    const chained=mcAskQueue.then(run,run);
+    mcAskQueue=chained.catch(()=>{});
+    return chained;
+  }
+
   async function runSlangExtraction(key) {
     if (cfg.slang?.enabled === false) return;
+    if (cfg.slang?.learnEnabled === false) return;   // 2026-11-08：关掉自动学习，只保留已有的 confirmed 注入
     if (!dshReady) return;
     const messages = slangWindows.get(key) ?? [];
     const min = Math.max(1, Number(cfg.slang?.extractMinMessages ?? 10));
@@ -2297,6 +2425,7 @@ async function main() {
   async function runSlangResearch(candidates, automatic = false) {
     if (!candidates || !candidates.length) return;
     if (cfg.slang?.enabled === false) return;
+    if (cfg.slang?.learnEnabled === false) return;   // 2026-11-08：同上，研究链也停
     if (!dshReady) return;
     // 过滤掉已经在研究队列里的候选，避免同一批被重复排队研究。
     const targets = candidates.filter((e) => e && !slangResearchingIds.has(e.id) && /^[\p{L}\p{N} _-]{2,24}$/u.test(e.content) && !/\d{5}/.test(e.content)).slice(0, 5);
@@ -2665,10 +2794,10 @@ async function main() {
   // 微信会话准入（顶层函数，2026-09-23 加）：modeAllowed 与事件读取器都要用，
   // 所以必须与 modeAllowed 同级；放进 main() 内部会导致顶层调不到。
   // 微信名字大小写归一（2026-09-23 端到端实测踩到）：
-  //   数据库读出来的昵称是**全大写** `BSNBEARJEW`，而白名单和既有会话 key 是配置时的
-  //   拼法 `BSNBearJew`。只做大小写敏感的比对会有两个后果：
+  // 示例已匿名化。
+  // 示例已匿名化。
   //     ① 事件源放行了，准入这里却拦掉 ⇒ 日志"忽略未授权的微信会话"；
-  //     ② 就算放行，`wx:private:BSNBEARJEW` 和既有的 `wx:private:BSNBearJew` 是两个
+  // 示例已匿名化。
   //        不同的 key ⇒ 凭空多一个会话，旧会话的水位/agentToken/群友印象全成孤儿。
   //   所以：比较一律转小写，并把名字统一成**白名单里那个拼法**（拼法以配置为准）。
   // ⚠️ 名单字段是**复数**（allow.groups / deny.groups），而 kind 传进来是**单数**
@@ -3535,7 +3664,9 @@ async function main() {
           const m = target.match(/^(group|private):(\d+)$/);
           if (!m) return sendJson({ ok: false, error: '目标无效：' + target }, 400);
           try {
-            await onebotSend(m[1], Number(m[2]), text);
+            const receipt = await onebotSend(m[1], Number(m[2]), text);
+            try { const st = getSocialV2State(target); st.lastAiReplyAt = st.lastActionAt = Date.now(); recordSentMessagesV2(target, [{ text, messageId: receipt?.message_id ?? null }]); }
+            catch (error) { log('游戏 QQ 发言已发送，但聊天上下文登记失败：' + (error?.message ?? error)); }
             appendActivity(`${target} [reserved2] 游戏里的她说话：${text.slice(0, 60)}`);
             sendJson({ ok: true, action: 'say', channel: 'qq', target });
           } catch (error) {
@@ -3553,7 +3684,9 @@ async function main() {
           if (!m) return sendJson({ ok: false, error: '目标无效：' + target }, 400);
           try {
             const kind = m[1], id = Number(m[2]);
-            await onebotSend(kind, id, text);
+            const receipt = await onebotSend(kind, id, text);
+            try { const st = getSocialV2State(target); st.lastAiReplyAt = st.lastActionAt = Date.now(); recordSentMessagesV2(target, [{ text, messageId: receipt?.message_id ?? null }]); }
+            catch (error) { log('游戏 QQ 发言已发送，但聊天上下文登记失败：' + (error?.message ?? error)); }
             appendActivity(`${target} [reserved2] 游戏里的她说话：${text.slice(0, 60)}`);
             sendJson({ ok: true, action: 'reply', target });
           } catch (error) {
@@ -3601,6 +3734,13 @@ async function main() {
           const reasons = Array.isArray(body.reasons) ? body.reasons : [];
           const events = Array.isArray(body.events) ? body.events : [];
           if (!events.length) return sendJson({ ok: false, error: '没有事件' }, 400);
+          if (!gameModeOn()) return sendJson({ok:true,skipped:'autoplay-paused'});
+          if (mcTickBusy) {
+            if (!pendingMcEvent) pendingMcEvent = { reasons:[], events:[] };
+            pendingMcEvent.reasons = [...new Set([...pendingMcEvent.reasons, ...reasons])].slice(-8);
+            pendingMcEvent.events = [...pendingMcEvent.events, ...events].slice(-8);
+            return sendJson({ ok:true, queued:true });
+          }
           // 节流：同一批事件 20 秒内只唤醒一次
           const now = Date.now();
           if (mcWakeGuard.at && now - mcWakeGuard.at < 20000) {
@@ -3634,11 +3774,23 @@ async function main() {
         if (req.method === 'POST' && url.pathname === '/api/mc/self-play') {
           const body = await readBody().catch(() => ({}));
           const on = body.on !== false;
-          mcGameState.manual = on;
-          mcGameState.manualAt = Date.now();
+          try {Object.assign(mcGameState,writeManualMode(on,record=>atomicWriteJson(MC_MODE_FILE,record)));}
+          catch(error){return sendJson({ok:false,error:'保存自主状态失败：'+String(error?.message??error)},500);}
           if (on) { scheduleMcTick(); }
+          else {
+            pendingMcEvent = null;
+            if (mcTickBusy && mcSessionId) {
+              try { await api.callUnary('session.cancel', {request:{sessionId:mcSessionId}}); }
+              catch (error) { log('停止游戏回合失败：'+String(error?.message ?? error)); }
+            }
+          }
           sendJson({ ok: true, selfPlay: on, gameMode: gameModeOn(), intervalMs: Number(cfg.minecraft?.tickIntervalMs) || 60000 });
           return;
+        }
+        // 独立整理游戏会话，不执行游戏回合。
+        if (req.method === 'POST' && url.pathname === '/api/mc/compact') {
+          try { return sendJson({ok:true,...await compactMcSession()}); }
+          catch(error) { return sendJson({ok:false,error:String(error?.message ?? error)},503); }
         }
         // 手动叫醒游戏会话一次
         if (req.method === 'POST' && url.pathname === '/api/mc/tick') {
@@ -3666,7 +3818,10 @@ async function main() {
         if (url.pathname === '/api/mc/game-mode') {
           if (req.method === 'POST') {
             const body = await readBody().catch(() => ({}));
-            if (typeof body.on === 'boolean') { mcGameState.manual = body.on; mcGameState.manualAt = Date.now(); }
+            if (typeof body.on === 'boolean') {
+              try {Object.assign(mcGameState,writeManualMode(body.on,record=>atomicWriteJson(MC_MODE_FILE,record)));}
+              catch(error){return sendJson({ok:false,error:'保存自主状态失败：'+String(error?.message??error)},500);}
+            }
             sendJson({ ok: true, gameMode: gameModeOn() });
             return;
           }
@@ -5693,7 +5848,7 @@ async function main() {
           // ── 微信会话（2026-09-23 加）──────────────────────────────────────
           // AI 回复走 MCP 工具 qq_send_message → POST 到本端点。微信 key 形如
           // `wx:private:昵称`，不匹配下面的数字正则，之前会直接被 400 挡掉
-          // （实测 AI 反馈："微信会话发送失败…qq_send_message(key=wx:private:BSNBearJew)"）。
+          // 示例已匿名化。
           // 这里提前分流到微信发送队列 —— sendToQQ 内已有 wx 分支（→ wxSendQueue → wx-send.mjs）。
           // 只在 key 以 wx: 开头时分流；QQ 的 key 一律走下面原有逻辑，行为不变。
           if (key.startsWith('wx:')) {
@@ -6497,15 +6652,17 @@ async function main() {
           const maxAgeDays = Number.isFinite(rawDays) && rawDays >= 0 ? Math.min(3650, rawDays) : 30;
           const maxTextChars = Math.max(20, Math.min(200, Number(hsCfg.maxTextChars) || 80));
           try {
-            let out = searchHistory({
+            const historyAccount = await getBotSelfQQ();
+            let out = historyAccount ? searchHistory({
               root: String(hsCfg.snowlumaRoot || '').trim() || undefined,
+              accountId: historyAccount,
               isGroup,
               sessionId,
               keyword,
               limit,
               maxAgeDays,
               maxTextChars
-            });
+            }) : {ok:false, error:'无法确定机器人账号'};
             if (!out.ok) {
               log(`[history] 直读消息库不可用，降级翻页：${out.error}`);
               out = await searchHistoryViaApi(isGroup, sessionId, keyword, limit, maxAgeDays);
@@ -8172,11 +8329,12 @@ async function main() {
     if (botSelfQQ !== null) return botSelfQQ;
     try {
       const info = await onebotAction('get_login_info', {});
-      botSelfQQ = String(info?.user_id ?? '');
+      const id = String(info?.user_id ?? '');
+      if (id) botSelfQQ = id;
     } catch {
-      botSelfQQ = '';
+      return '';
     }
-    return botSelfQQ;
+    return botSelfQQ || '';
   }
 
   // ── 历史搜索的降级路径（2026-09-28 加）──────────────────────────────────
@@ -9759,7 +9917,7 @@ async function main() {
       else strangers.push({ name: n, count: 1 });
     }
     // 2026-10-06 加：印象注入必须带 QQ + 在场标记。
-    // 起因：它把群友 TURE NORD 当成印象里的「板爹」（用户当场纠正「他又不是板子哥」、群主说「搁这张冠李戴」）。
+    // 示例已匿名化。
     // 印象原来只写昵称，模型没法把它跟消息里的「昵称(QQ)」对上，只能靠画像相似去猜 ⇒ 把两个人合并。
     // 现在：① 按名字从最近消息里反查 QQ；② 最近没说过话的标「最近没说话」，免得它对着空气叫名字。
     const recentAll = [
@@ -11218,22 +11376,35 @@ async function main() {
       } catch (error) { return ''; }
     })();
     const trollLine = trollText ? trollText + '\n\n' : '';
+    const mcKnowledgeLine = (() => {
+      if (!cfg.minecraft?.enabled || key !== 'private:'+cfg.ownerQQ || !gameModeOn()) return '';
+      const recent=[...(st.recentMessages || []),...(st.unread || [])].slice(-4).map(m=>typeof m==='string'?m:String(m?.text ?? m?.content ?? '')).join(' ');
+      const selected=selectMcKnowledge({queryText:recent,fallback:false,maxTopics:2,maxChars:2500});
+      return selected ? selected+'\n\n' : '';
+    })();
+    const mcSharedLine = sharedMcContext({
+      key,owner:cfg.ownerQQ,enabled:cfg.minecraft?.enabled,
+      home:readJsonSafe(cfg.minecraft?.homeFile || path.resolve(ROOT,'..','minecraft','home.json'),null),
+      record:readJsonSafe(path.join(STATE_DIR,'mc-home-context.json'),null),
+      plan:mcPlan
+    });
     const mcLine = cfg.minecraft?.enabled
       ? [
         '【Minecraft】你不只是聊天——**你就是游戏里那个角色，能真的走、真的挖、真的合成、真的放方块**。工具是 qq_mc，用平常话说出意思就行，不用让用户记指令。',
         '',
         '**核心：别再说"我只能站着""我走不了""我不会挖""我不能合成"——这些你都能做，直接调工具。**',
         '',
-        '移动：说「过来/来我这/走到我身边」→ action=come；「跟着我」→ follow；「停下」→ stop；「往前走/去 xxx 坐标」→ goto(x,y,z)；',
-        '查看：问「你在哪/你在干嘛」→ status；「背包里有什么」→ inventory；',
+        '移动：说「过来/来我这/走到我身边」→ action=come；「跟着我」→ follow；「停下」→ stop；「往前走/去 xxx 坐标」→ goto(x,y,z)。跟随已启用不代表已跟上；用 status 的 followVisible、followDistance 核对。路走不通可 scan(text="route",x,y,z) 只读预览；结果不保证实际走通；先观察装备、地形与退路，必要时可挖除普通障碍或垫脚，不能破坏箱子等储物容器，临时改变外观后尽量恢复。门、按钮先正常交互。',
+        '查看：问「你在哪/你在干嘛」→ status；「背包里有什么」→ inventory；进食用 useBlock(text="eat",name=背包里的原版食物英文名)，无需坐标。拾取已识别掉落物用 useBlock(text="collect",name=物品英文名)，只在可确认往返无破坏路线时行动，并根据库存变化报告。unknown 的 registryName 是当前存档的模组物品名称，不保证已经支持使用。status 的 nearbyHostiles 列出可见敌怪，attack(name=敌怪英文名) 只发出一次近战，伤害和击杀需再次核实；无指定目标不会自动攻击玩家。',
         '干活：说「砍树/挖木头」→ findBlock(name="log") 拿坐标再 dig；「挖石头/挖矿」→ findBlock(name="stone"/"coal_ore") 再 dig；',
         '合成：说「做个工作台/木棍/木镐」→ 先 craftable 看能做什么，再 craft(item,count)；缺工作台就先 craft 工作台、放下再用 useBlock 右键它；',
-        '放置方块：**用 placeNear(where="front"/"feet"/"up") 就行，别自己算坐标**（place 要算坐标容易失败）；右键使用方块（工作台/箱子/熔炉）：useBlock(x,y,z)；',
-        '家：说「这是我们家/这里就是家」→ home（默认把他现在站的位置记成家）；「回家」→ gohome；',
+        '放置方块：place 的 x/y/z 是要填入的目标格，通常不填 face；必须依据返回的 target、actual 和 ok 确认，不能把失败当成功。距离太远先走近，没有相邻支撑先建相邻格。placeNear 不是蓝图施工工具。右键使用方块用 useBlock(x,y,z)。原版箱子：先走近，useBlock 只带坐标查看内容；加 name=物品英文名 和 count=数量取出，加 item=物品英文名 和 count=数量存入，不能同时加 name 和 item；以返回的数量变化为准。玩家身上的背包不是箱子，不能直接读取或拿取。',
+        '熔炉 useBlock：坐标加 text=furnace-inspect 查看，furnace-input/furnace-fuel 加 name 和 count 投入；furnace-take 取成品，furnace-take-input/furnace-take-fuel 取回原料或燃料。附魔台 useBlock：坐标、name 和 text=enchant-options 查看，enchant-apply 加 count=1/2/3 执行。钓鱼：useBlock 指定水方块坐标且 text=fish，需钓鱼竿。findBlock 仅返回最近一个方块，不能推断只有一格；map 或 scan(text=water-area,x,y,z,radius=5) 检查水面。Java 1.12.2 不需要 5×5 水面才能钓鱼，单次超时不能证明水域太小。床：走近主世界的床，useBlock 带床坐标和 text=sleep 或 wake；status 返回 timeOfDay 和 sleeping。按结果报告，不要把等待或失败说成成功。',
+        '家：如果主人指定的是已有小屋，先核实小屋位置，再用 home 指定小屋内的 x/y/z；只有明确将主人当前位置设为家时才用默认 home。「回家」→ gohome。记住家不代表人已经走到家。',
         '**看地形**：说「周围什么样/这是哪」→ map（字符地图）；「地形高低」→ height；「附近有什么」→ scan；',
-        '**盖东西**：说「盖个 3x3x3 的墙/搭个房子」→ build(x,y,z,width,height,depth,item,hollow)；',
-        '**连串做一串事**：sequence({steps:[{type:"move",x,y,z},{type:"dig",x,y,z},{type:"say",text:"..."}]})，最多 64 步，比一步步调省事；',
-        '**自主：他说「你自己去玩吧」「不用管我」→ selfPlay(on=true) 开启自己玩；说「停下来陪我」「别乱跑了」→ selfPlay(on=false)；**',
+        '**盖房子**：先用 scan(text="house-plan",x,y,z,width,depth,height,item) 获取具体坐标、入口、材料数和障碍；x/y/z 是墙体最低层西北角，后续固定原点与尺寸。按 next 的目标格自下而上使用 place，不填 face，逐次检查实际返回并复查同一蓝图的 already 与 missing；无支撑先建邻格，太远先走近。用 scan(text="house",同样坐标和尺寸) 核验墙、屋顶、入口和内部空间；未通过前只说明实际进度，不声称房子完成。检查通过也不代表美观或安全。',
+        '**连串做事**：sequence 支持 move、dig、place 等，也支持 {type:"furnace",x,y,z,operation:"furnace-input"/"furnace-fuel"/"furnace-inspect"/"furnace-take",name,count}。熔炼需要时间，取物后先核对背包和槽位，失败或不确定不盲目重复；最多 64 步。',
+        '**自主：他说「你自己去玩吧」「不用管我」→ selfPlay(on=true) 开启自己玩；说「停下来陪我」「别乱跑了」→ selfPlay(on=false)。判断持续规划是否开启要看 status.selfPlay.enabled；companionPlay.enabled 或 auto.enabled 为 false 只说明本地子模块停止，不代表持续规划关闭。若 status.selfPlay.enabled 为 null 则无法确认。**',
         '说话：**用 say(text) 或 reply(text)，都能发到他的 QQ**（他一般在 QQ 里看，不在游戏公屏看）。chat(message) 是游戏公屏，只在明确需要时才用。',
         '',
         '做事要连贯：先答应（"来了"），再调工具，然后说结果（"到了"）。没事别乱调；工具报错就如实说，不要编他做了什么。',
@@ -11282,7 +11453,7 @@ async function main() {
     const wakeLine = `【当前唤醒】${wcMode}，${wcTime}${wcTriggers.length ? `；触发：${wcTriggers.join('/')}` : ''}\n\n`;
     const attackLine = attackMode.promptBlock(key);
     const screenLine = screenWatch.promptBlock();
-    const base = attackLine + roleLine + tokenLine + antiAiLine + proactiveLine + stickerLine + preSleepLine + statusLine + wakeLine + screenLine + memoryLine + participationLine + innerLine + selfLearningLine + memeLine + trollLine + mcLine + buildAgentPrivilegeLine(key);
+    const base = attackLine + roleLine + tokenLine + antiAiLine + proactiveLine + stickerLine + preSleepLine + statusLine + wakeLine + screenLine + memoryLine + participationLine + innerLine + selfLearningLine + memeLine + trollLine + mcKnowledgeLine + mcSharedLine + mcLine + buildAgentPrivilegeLine(key);
     if (reason === 'bootstrap') {
       return `${base}【引导唤醒】你已接入 QQ 会话 ${key}。\n当前是二代仿真模式：你的文本输出不会自动发送到 QQ，所有发言必须通过工具完成。\n请先调用 qq_get_prompt 查看你的角色、推荐值、可用工具和当前状态，然后用 qq_set_wake_config 设置你希望如何被唤醒。`;
     }
@@ -11696,12 +11867,20 @@ async function main() {
   }
 
   // ── 游戏模式状态（2026-11-03 加）────────────────────────────────
-  const mcGameState = { online: false, at: 0, manual: null, manualAt: 0, reason: '' };
+  const MC_MODE_FILE = path.join(STATE_DIR,'mc-self-play.json');
+  const mcGameState = { online: false, at: 0, ...readManualMode(readJsonSafe(MC_MODE_FILE,null)), reason: '' };
   const gameModeReplyAt = new Map(); // key -> 上次自动回复时间，防止刷屏
   function gameModeOn() {
     // 手动开关优先（手动关 = 强制不进入游戏模式）
     if (mcGameState.manual === false) return false;
-    if (mcGameState.manual === true) return true;
+    if (mcGameState.manual === true) {
+      // 2026-11-07：manual 是"只设不清"的开关 —— 退出游戏后没人清它，
+      // 群里会一直自动回「我在打游戏呢 一会儿回你」（10-05 两次、11-06、11-07 已踩四次）。
+      // 修法：bot 明确报过离线（at>0 且 online=false）时，手动开关不再生效。
+      // 保留 at===0 的情况 —— "先开游戏模式、再进游戏"的流程还要能用。
+      if (!mcGameState.online && Number(mcGameState.at) > 0) return false;
+      return true;
+    }
     // 自动：bot 3 分钟内有心跳算在线
     return mcGameState.online && (Date.now() - mcGameState.at < 180000);
   }
@@ -11994,7 +12173,9 @@ async function main() {
     if (!isSessionAllowedInCurrentMode(key)) return;
     const st = getSocialV2State(key);
     if (st.proactiveTimer) return;
-    const p = cfg.socialV2?.proactive ?? {};
+    const baseProactive = cfg.socialV2?.proactive ?? {};
+    const isFocus = key.startsWith('group:') || key === ownerPrivateKey();
+    const p = isFocus ? { ...baseProactive, ...(baseProactive.focus ?? {}) } : baseProactive;
     const min = Math.max(60 * 1000, Number(p.checkIntervalMinMs) || 30 * 60 * 1000);
     const max = Math.max(min, Number(p.checkIntervalMaxMs) || 90 * 60 * 1000);
     const delay = Math.floor(min + Math.random() * (max - min));
@@ -12013,7 +12194,7 @@ async function main() {
       const recent = Array.isArray(st.recentMessages) ? st.recentMessages : [];
       const aiCount = recent.filter((m) => m && m.isSelf && Date.now() - Number(m.time || 0) < 60 * 60 * 1000).length;
       if (aiCount >= 5) prob *= 0.3;
-      const mayInitiate = !innerLifeEnabledV2(st) || canInitiateInnerLife(st.innerLife, { lastIncomingAt: st.lastIncomingAt, lastAiReplyAt: st.lastAiReplyAt });
+      const mayInitiate = !innerLifeEnabledV2(st) || canInitiateInnerLife(st.innerLife, { lastIncomingAt: st.lastIncomingAt, lastAiReplyAt: st.lastAiReplyAt, unansweredRetryMs: key === ownerPrivateKey() ? 12 * 60 * 60 * 1000 : 0 });
       if (mayInitiate && idle >= idleThreshold && Math.random() < prob && !isConversationBusyV2(key, st)) {
         // ── Jev 接话闸（2026-09-25 加）──────────────────────────────────────
         // 概率已经命中，再问一次本地小模型「这轮值不值得接一句」。
@@ -12186,6 +12367,14 @@ async function main() {
       } catch (error) { log('八类能力入站观察出错：' + (error?.message ?? error)); }
     }
     const isOwner = String(event.user_id) === String(cfg.ownerQQ ?? '');
+    if(isOwner && kind==='private' && key===ownerPrivateKey() && gameModeOn()) {
+      ownerMcPriorityUntil=Date.now()+30000;
+      // A single Minecraft body must not be operated by the autonomous and owner turns simultaneously.
+      if(mcSessionId && (mcTickBusy || learnerCollectors.has(mcSessionId) || learnerWaiters.has(mcSessionId) || contextState(mcSessionId)?.busy)) {
+        void api.callUnary('session.cancel',{request:{sessionId:mcSessionId}}).catch(error=>log('让出主人对话时取消游戏回合失败：'+String(error?.message??error)));
+        void fetch('http://127.0.0.1:'+(Number(cfg.minecraft?.port)||63200)+'/api/mc/stop',{method:'POST',headers:{'content-type':'application/json'},body:'{}',signal:AbortSignal.timeout(4000)}).catch(()=>{});
+      }
+    }
     const roleState = readRoleState();
 
     // 若该会话有挂起的提问/审批，先当作回答处理（用当前消息自己的文字，不含引用原文）。
@@ -12680,11 +12869,14 @@ async function main() {
             if (!key) {
               // 黑话学习会话：只收集 turn，不发送 QQ，并唤醒等待中的学习任务。
               if (learnerSessions.has(frame.sessionId)) {
-                const learnerCollector = learnerCollectors.get(frame.sessionId) ?? createTurnCollector();
+                let learnerCollector = learnerCollectors.get(frame.sessionId);
+                if (!learnerCollector && frame.event.type !== 'turn/start' && frame.event.type !== 'turn/end') continue;
+                learnerCollector ??= createTurnCollector();
                 learnerCollectors.set(frame.sessionId, learnerCollector);
                 const learnerEnded = learnerCollector.push(frame.event);
                 if (learnerEnded) {
                   learnerCollectors.delete(frame.sessionId);
+                  if (frame.sessionId === mcSessionId && mcHandoffInFlight) mcHandoffInFlight=false;
                   const waiters = learnerWaiters.get(frame.sessionId) ?? [];
                   const waiter = waiters.shift();
                   if (waiters.length === 0) learnerWaiters.delete(frame.sessionId);
@@ -13456,6 +13648,7 @@ async function main() {
     }).catch(() => {});
   });
   bot.on('close', (info) => {
+    botSelfQQ = null;
     gatewayState.ws = false;
     gatewayState.lastCloseAt = Date.now();
     log(`SnowLuma 连接断开（code=${info?.code ?? '?'}），重连中…`);

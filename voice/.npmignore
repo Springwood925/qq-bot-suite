@@ -1,0 +1,13 @@
+node_modules/
+voice-cache/
+audio-runtime/
+dependencies/
+__pycache__/
+dsh-call-session.json
+dsh-call-sessions.jsonl
+*.log
+*.wav
+*.ogg
+*.mp3
+*.zip
+.env*

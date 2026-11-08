@@ -24,7 +24,7 @@ const exec = promisify(execFile);
 const DEFAULT_BASE = 'https://api.minimaxi.com';
 const DEFAULT_MODEL = 'speech-02-turbo';
 const DEFAULT_VOICE = 'female-shaonv';
-const FFMPEG = process.env.MC_FFMPEG || 'E:/Deepseek/_bin/ffmpeg.exe';
+const FFMPEG = process.env.MC_FFMPEG || 'ffmpeg';
 
 /** 用 ffmpeg 重封装，修正 MiniMax 那个坏掉的 wav 头。失败就返回原文件。 */
 async function fixWavHeader(src, dst) {

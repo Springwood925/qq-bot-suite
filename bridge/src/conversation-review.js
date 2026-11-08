@@ -26,7 +26,7 @@ export function createConversationReview({db,now,scopeKey,settings,store,sourceF
       db.prepare("UPDATE conversation_review_runs SET status='expired',reason='not-completed' WHERE scope=? AND status='issued' AND issued_at<=?").run(scope,now()-DAY);
       db.prepare('INSERT INTO conversation_review_runs(id,scope,issued_at,refs,status) VALUES (?,?,?,?,?)').run(id,scope,now(),JSON.stringify(refs),'issued');
       db.prepare('UPDATE conversation_review_state SET cursor=?,last_issued_at=?,requested=0 WHERE scope=?').run(Math.max(state.cursor,...usable.map(m=>Number(m.seq))),now(),scope);
-      return {id,prompt:`\n\n【聊天记忆回顾 ${id}】先正常处理交流，再仅检查上面已可见的收到消息。挑最多3条值得以后延续的明确偏好、具体事件或约定；保留否定、条件、时间和原话所指，不把玩笑、表情、别人转述、单纯称呼或你自己的回答当长期事实，不收集凭据。每条用sourceSeq引用可见真实收到消息的seq；不确定或没价值就不提，不凑条数。用一次qq_memory_append(category="activeTopic",content为完整JSON字符串)报告：{"_memoryTree":1,"action":"candidateReview","reviewId":"${id}","candidates":[{"kind":"fact","content":"简短候选，最多180字","sourceSeq":123}]}。无合适内容传candidates:[]。所有结果都待管理员审核；不额外查历史、不向群友汇报、不为回顾继续聊天或重试。\n`};
+      return {id,prompt:`\n\n【聊天记忆回顾 ${id}】先正常处理交流，再仅检查上面已可见的收到消息。本次允许的来源 seq：${refs.map(r=>r.seq).join('、')}。只能从这份列表选 sourceSeq；回顾发出后新收到的消息不属于本次回顾，即使现在能看到也不能引用，留待下次。挑最多3条值得以后延续的明确偏好、具体事件或约定；保留否定、条件、时间和原话所指，不把玩笑、表情、别人转述、单纯称呼或你自己的回答当长期事实，不收集凭据。引用的来源必须支持候选的完整内容，不把后来的消息合并进旧来源；不确定或没价值就不提，不凑条数。用一次qq_memory_append(category="activeTopic",content为完整JSON字符串)报告：{"_memoryTree":1,"action":"candidateReview","reviewId":"${id}","candidates":[{"kind":"fact","content":"简短候选，最多180字","sourceSeq":${refs[0].seq}}]}。示例编号仅示格式，须选择真正支持内容的来源。无合适内容传candidates:[]。所有结果都待管理员审核；不额外查历史、不向群友汇报、不为回顾继续聊天或重试。\n`};
     });
   }
   function submit(scope,request,context){

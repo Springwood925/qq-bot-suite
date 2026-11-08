@@ -1,0 +1,25 @@
+{
+  "name": "mc-bot",
+  "version": "1.0.0",
+  "description": "Minecraft companion service for qq-bot-suite",
+  "main": "index.js",
+  "scripts": {
+    "test": "node --test *.test.mjs",
+    "postinstall": "node ./ensure-door-pathfinder-patch.cjs",
+    "start": "node bot.mjs"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "minecraft-protocol-forge": "^1.0.0",
+    "mineflayer": "^4.39.0",
+    "mineflayer-pathfinder": "^2.4.5",
+    "minecraft-protocol": "1.68.0",
+    "minecraft-data": "3.119.0",
+    "prismarine-block": "1.23.0",
+    "prismarine-nbt": "2.8.0",
+    "vec3": "0.1.10"
+  }
+}

@@ -1,0 +1,5 @@
+import {test} from 'node:test';import assert from 'node:assert/strict';import fs from 'node:fs';import vm from 'node:vm';
+const src=fs.readFileSync(new URL('../client.js',import.meta.url),'utf8');
+function render(data){let component;const React={createElement:(type,props,...children)=>({type,props,children}),useState:(v)=>[v===null?data:v,()=>{}],useEffect:()=>{},useMemo:f=>f(),useCallback:f=>f,useRef:x=>({current:x}),Fragment:'fragment'};const window={__ModuleLoader__:{load({factory}){const mod=factory(n=>{if(n==='react')return React;throw Error(n)});mod.apply({slots:{inject(_key,fn){fn()},register(o,c){component=c}}})}}};const context={window,console,fetch:()=>{},setInterval,clearInterval,URL,Date};vm.runInNewContext(src,context);assert.equal(typeof component,'function');return component()}
+function flatten(x){if(x==null||typeof x==='boolean')return '';if(Array.isArray(x))return x.map(flatten).join(' ');if(typeof x==='object')return flatten(x.children);return String(x)}
+test('现有面板保留并出现 Minecraft 导航',()=>{const tree=render(null);const t=flatten(tree);assert.match(t,/Minecraft/);assert.match(t,/记忆树/);assert.match(t,/语音通话/)});

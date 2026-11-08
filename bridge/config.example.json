@@ -341,5 +341,12 @@
   },
   "endfield": {
     "enabled": true
+  },
+  "minecraft": {
+    "enabled": false,
+    "port": 63200,
+    "tickEnabled": true,
+    "tickIntervalMs": 60000,
+    "homeFile": ""
   }
 }

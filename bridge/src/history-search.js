@@ -32,8 +32,14 @@ const DEFAULT_ROOT = resolveDefaultRoot();
  * 一台机器上可能有多个账号目录（登录过几个 QQ 就有几个），
  * 取最近写入的那个 —— 不写死账号号，避免换号或升级后失效。
  */
-export function findMessagesDb(root = DEFAULT_ROOT) {
+export function findMessagesDb(root = DEFAULT_ROOT, accountId = '') {
   const dataDir = path.join(root, 'data');
+  if (accountId) {
+    if (!/^\d+$/.test(String(accountId))) return null;
+    const file = path.join(dataDir, String(accountId), 'messages.db');
+    try { const st = fs.statSync(file); return { file, account: String(accountId), mtimeMs: st.mtimeMs }; }
+    catch { return null; }
+  }
   let entries;
   try { entries = fs.readdirSync(dataDir, { withFileTypes: true }); } catch { return null; }
   let best = null;
@@ -95,7 +101,8 @@ export function searchHistory(options = {}) {
     limit = 20,
     maxAgeDays = 30,
     maxTextChars = 80,
-    dbPath = null
+    dbPath = null,
+    accountId = ''
   } = options;
 
   const kw = String(keyword ?? '').trim();
@@ -104,7 +111,7 @@ export function searchHistory(options = {}) {
   const sid = Number(sessionId);
   if (!Number.isFinite(sid) || sid <= 0) return { ok: false, error: 'sessionId 无效' };
 
-  const found = dbPath ? { file: dbPath, account: '?' } : findMessagesDb(root);
+  const found = dbPath ? { file: dbPath, account: '?' } : findMessagesDb(root, accountId);
   if (!found) {
     return { ok: false, error: `找不到 SnowLuma 的 messages.db（${path.join(root, 'data', '*', 'messages.db')}）` };
   }

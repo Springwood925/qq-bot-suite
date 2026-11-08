@@ -910,18 +910,19 @@ server.tool(
 
 server.tool(
   'qq_mc',
-  '**你在 Minecraft 里的手脚，能真的走、真的挖、真的合成、真的放方块。** status=看自己位置/血量/背包；goto(x,y,z)/come/follow/stop/jump=移动；findBlock(name)=找最近的某种方块返回坐标；findBlockAll(name,count)=找多个；dig(x,y,z)=挖指定方块；place(x,y,z,face,item)=放方块（要算坐标，容易失败）；**placeNear(where="front"/"feet"/"up")=不用算坐标，直接在我面前/脚下/头顶放一块**（推荐用这个）；inventory=看背包；equip=装备；craft(item,count)=合成（缺工作台会失败，先用 craftable 查能做什么）；craftable=列出当前材料能合成的物品；useBlock(x,y,z)=右键使用方块（工作台/箱子/熔炉）；attack(who)=攻击；drop=扔物品；home/gohome=设家回家；**selfPlay(on)=开关"她自己在玩"**（说"你去玩吧"就用它；on=false 让她停下等你）；auto/idle=旧的选择器自主（已废弃）；stopAll=全停；**say(text)/reply(text)=在 QQ 里说话**（发到主人 QQ）；**chat(message)=在游戏公屏说话**（世界里的广播，主人能看到）——这两个别搞混。**看地形**：map(radius)=字符地表图 / height(radius)=高度图 / scan(radius,height)=附近方块统计；**盖东西**：build(x,y,z,width,height,depth,item,hollow)=长方体；**连串**：sequence({steps:[{type:"move",x,y,z},{type:"dig",x,y,z},...]}) 最多 64 步；**看门狗**：watch(op=status|arm|disarm|config)。**别再说自己不会动、不会挖、不能合成 —— 你有这些工具，直接调就是。** 服务不通就如实说游戏没连上。',
+  '**你在 Minecraft 里的手脚，能真的走、真的挖、真的合成、真的放方块。** status=看自己位置/血量/背包；goto(x,y,z)/come/follow/stop/jump=移动；findBlock(name)=找最近的某种方块返回坐标；findBlockAll(name,count)=找多个；dig(x,y,z)=挖指定方块；place(x,y,z,item)=在指定目标格放方块，通常不填 face；检查 ok、target、actual，失败不算成功；placeNear(where="front"/"feet"/"up")=尝试在附近指定位置放方块，不能代替蓝图指定坐标；inventory=看背包；equip=装备；craft(item,count)=合成（缺工作台会失败，先用 craftable 查能做什么）；craftable=列出当前材料能合成的物品；useBlock(x,y,z)=使用方块：熔炉 text=furnace-inspect 查看，text=furnace-input 或 furnace-fuel 搭配 name=物品英文名、count=数量投入，text=furnace-take 取成品；取过后先检查结果和背包，不要重复盲取。attack(who)=攻击；drop=扔物品；home/gohome=设家回家；**selfPlay(on)=开关"她自己在玩"**（说"你去玩吧"就用它；on=false 让她停下等你）；auto/idle=旧的选择器自主（已废弃）；stopAll=全停；**say(text)/reply(text)=在 QQ 里说话**（发到主人 QQ）；**chat(message)=在游戏公屏说话**（世界里的广播，主人能看到）——这两个别搞混。**看地形**：map(radius)=字符地表图 / height(radius)=高度图 / scan(radius,height)=附近方块统计；**盖东西**：build(x,y,z,width,height,depth,item,hollow)=长方体；**连串**：sequence({steps:[{type:"move",x,y,z},{type:"dig",x,y,z},...]}) 最多 64 步；熔炉步骤为 {type:"furnace",x,y,z,operation:"furnace-input"/"furnace-fuel"/"furnace-inspect"/"furnace-take",name,count}，熔炼需要等待并检查结果；**看门狗**：watch(op=status|arm|disarm|config)。**别再说自己不会动、不会挖、不能合成 —— 你有这些工具，直接调就是。** 服务不通就如实说游戏没连上。',
   {
     key: z.string().min(1), token: z.string().min(1),
     action: z.enum(['status', 'follow', 'stop', 'come', 'goto', 'look', 'say', 'chat', 'home', 'gohome', 'auto', 'idle', 'selfPlay', 'dig', 'place', 'placeNear', 'findBlock', 'findBlockAll', 'inventory', 'equip', 'attack', 'jump', 'drop', 'stopAll', 'reply', 'craft', 'craftable', 'useBlock', 'map', 'height', 'scan', 'build', 'sequence', 'watch']),
     at: z.enum(['owner', 'bot']).optional().describe('action=home 时：owner=把主人现在站的位置设为家（默认），bot=用机器人自己的位置'),
     on: z.boolean().optional().describe('action=auto 时：true 开自主探索，false 关'),
-    name: z.string().max(60).optional().describe('action=findBlock/equip/drop 时：方块或物品名（如 log / coal_ore / dirt）'),
+    name: z.string().max(60).optional().describe('action=findBlock/equip/drop 或 useBlock 熔炉投入时：方块或物品英文名'),
     maxDistance: z.number().min(1).max(64).optional().describe('action=findBlock 时的搜索半径，默认 32'),
-    face: z.enum(['up', 'down', 'north', 'south', 'east', 'west']).optional().describe('action=place 时放哪个面，默认 up'),
+    where: z.enum(['front', 'feet', 'up']).optional().describe('action=placeNear 的目标位置'),
+    face: z.enum(['up', 'down', 'north', 'south', 'east', 'west']).optional().describe('action=place 时指定相邻支撑面的方向；通常省略，由系统选择'),
     item: z.string().max(60).optional().describe('action=place 时用背包里哪个方块'),
     dest: z.enum(['hand', 'head', 'torso', 'legs', 'feet']).optional().describe('action=equip 装到哪，默认 hand'),
-    count: z.number().min(1).optional().describe('action=drop 扔几个'),
+    count: z.number().min(1).optional().describe('action=drop 数量；useBlock 熔炉投入的数量'),
     radius: z.number().min(2).max(48).optional().describe('action=map/height/scan 时的半径（格），默认 map 24 / height 20 / scan 16'),
     step: z.number().min(1).max(4).optional().describe('action=map/height 时每隔几格采样，默认 2'),
     width: z.number().min(1).max(32).optional().describe('action=build 时宽'),
@@ -934,9 +935,9 @@ server.tool(
     ms: z.number().min(50).max(2000).optional().describe('action=jump 跳多久，默认 300'),
     who: z.string().max(40).optional().describe('玩家名，默认是你主人'),
     x: z.number().optional(), y: z.number().optional(), z: z.number().optional(),
-    text: z.string().max(200).optional().describe('action=say 时要说的话')
+    text: z.string().max(200).optional().describe('action=say 时消息；useBlock 时可填 furnace-inspect、furnace-input、furnace-fuel 或 furnace-take')
   },
-  async ({ key, token, action, who, x, y, z, text, at, on, name, maxDistance, face, item, dest, count, ms, radius, step, width, height, depth, hollow, steps, op, message }) => {
+  async ({ key, token, action, who, x, y, z, text, at, on, name, maxDistance, where, face, item, dest, count, ms, radius, step, width, height, depth, hollow, steps, op, message }) => {
     try {
       const body = { action };
       if (who !== undefined) body.who = who;
@@ -946,6 +947,7 @@ server.tool(
       if (on !== undefined) body.on = on;
       if (name !== undefined) body.name = name;
       if (maxDistance !== undefined) body.maxDistance = maxDistance;
+      if (where !== undefined) body.where = where;
       if (face !== undefined) body.face = face;
       if (item !== undefined) body.item = item;
       if (dest !== undefined) body.dest = dest;

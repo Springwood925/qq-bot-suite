@@ -1,0 +1,3 @@
+import {test} from 'node:test';import assert from 'node:assert/strict';import {ownerHasPriority} from './mc-turn-coordination.mjs';
+test('主人有待处理消息或回合运行时让行',()=>{assert.equal(ownerHasPriority({now:10,priorityUntil:20}),true);assert.equal(ownerHasPriority({queueRunning:true}),true);assert.equal(ownerHasPriority({contextBusy:true}),true);assert.equal(ownerHasPriority({pendingTimer:true}),true)});
+test('无法核实未完成回合时保守等待，已完成或明确空闲不永久阻塞',()=>{assert.equal(ownerHasPriority({contextBusy:null,execution:{createdAt:100},lastReplyAt:0}),true);assert.equal(ownerHasPriority({contextBusy:null,execution:{createdAt:100},lastReplyAt:101}),false);assert.equal(ownerHasPriority({contextBusy:false,execution:{createdAt:100}}),false)});

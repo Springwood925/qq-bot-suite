@@ -1,0 +1,22 @@
+{
+  "host": "127.0.0.1",
+  "port": 25565,
+  "username": "CompanionBot",
+  "version": "1.12.2",
+  "auth": "offline",
+  "owner": "Player",
+  "autoFollow": false,
+  "autonomy": {
+    "autoStart": false,
+    "enabled": false
+  },
+  "forge": {
+    "enabled": false,
+    "localGameDir": "",
+    "localWorldName": ""
+  },
+  "companionPlay": {
+    "enabled": false,
+    "intervalMs": 90000
+  }
+}

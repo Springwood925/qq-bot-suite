@@ -51,3 +51,12 @@ bridge/self-identity.json
 
 # 梗百科词库是静态数据（16.7MB），不是运行态，要随包分发
 !bridge/data/memes.db
+# Runtime data for optional Minecraft and voice services
+minecraft/home.json
+minecraft/config.json
+voice/voice-cache/
+voice/audio-runtime/
+voice/dependencies/
+voice/dsh-call-session.json
+voice/dsh-call-sessions.jsonl
+voice/__pycache__/

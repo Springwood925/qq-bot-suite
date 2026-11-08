@@ -1,0 +1,4 @@
+import {test} from 'node:test';import assert from 'node:assert/strict';import {EventEmitter} from 'node:events';import {createSwimRescue} from './swim-rescue.mjs';
+function fake(){const b=new EventEmitter();b.entity={position:{offset(){return {floored(){return {}}}}}};b.head='water';b.blockAt=()=>({name:b.head});b.setControlState=(k,v)=>{b.jump=v};return b;}
+test('水下时间过长时上浮，见到空气后释放按键',()=>{let t=0;const b=fake(),r=createSwimRescue(b,{now:()=>t,maxSubmergedMs:8000});b.emit('physicsTick');assert.equal(r.status().active,false);t=8001;b.emit('physicsTick');assert.equal(b.jump,true);b.head='air';b.emit('physicsTick');assert.equal(b.jump,false);r.close()});
+test('氧气很低立即上浮，未知方块不误认为已出水',()=>{const b=fake();b.oxygenLevel=5;const r=createSwimRescue(b);b.emit('physicsTick');assert.equal(r.status().active,true);b.blockAt=()=>null;b.emit('physicsTick');assert.equal(r.status().active,true);r.close();assert.equal(b.jump,false)});
